@@ -19,36 +19,38 @@ COLS = ["t"] + CHANNEL_NAMES
 N_CHANNELS = len(CHANNEL_NAMES)
 
 WINDOW_SEC = 5.0  # last N seconds for
+SLEEP_LOOP = 0.05
+
 
 pg.setConfigOptions(useOpenGL=False)  # TODO acceleration OpenGL (to test)
 
-def downsample_minmax(x, y, max_points):
-    n = len(x)
-    if n <= max_points:
-        return x, y
+# def downsample_minmax(x, y, max_points):
+#     n = len(x)
+#     if n <= max_points:
+#         return x, y
 
-    bucket_size = n // max_points
+#     bucket_size = n // max_points
 
-    x_out = []
-    y_out = []
+#     x_out = []
+#     y_out = []
 
-    for i in range(0, n, bucket_size):
-        xs = x[i:i + bucket_size]
-        ys = y[i:i + bucket_size]
+#     for i in range(0, n, bucket_size):
+#         xs = x[i:i + bucket_size]
+#         ys = y[i:i + bucket_size]
 
-        if len(xs) == 0:
-            continue
+#         if len(xs) == 0:
+#             continue
 
-        ymin = ys.min()
-        ymax = ys.max()
+#         ymin = ys.min()
+#         ymax = ys.max()
 
-        xmin = xs[ys.argmin()]
-        xmax = xs[ys.argmax()]
+#         xmin = xs[ys.argmin()]
+#         xmax = xs[ys.argmax()]
 
-        x_out.extend([xmin, xmax])
-        y_out.extend([ymin, ymax])
+#         x_out.extend([xmin, xmax])
+#         y_out.extend([ymin, ymax])
 
-    return np.array(x_out), np.array(y_out)
+#     return np.array(x_out), np.array(y_out)
 
 def acq_worker(data_name, meta_name, queue, pause_event, stop_event):
     shm_data = shared_memory.SharedMemory(name=data_name)
@@ -80,8 +82,9 @@ def acq_worker(data_name, meta_name, queue, pause_event, stop_event):
         idx += 1
         meta[0] = idx
 
-        queue.put(idx)
-        time.sleep(0.02)
+        if queue.qsize() < 10:
+            queue.put(idx)
+        time.sleep(SLEEP_LOOP)
 
     shm_data.close()
     shm_meta.close()
@@ -95,7 +98,8 @@ class MainWindow(QWidget):
         layout = QVBoxLayout()
 
         # plot
-        self.plot = pg.PlotWidget()
+        # self.plot = pg.PlotWidget()
+        self.plot = pg.PlotWidget(axisItems={'bottom': pg.DateAxisItem()})
         self.legend = self.plot.addLegend()
 
         # curves dict
@@ -147,6 +151,7 @@ class MainWindow(QWidget):
             buffer=self.shm_data.buf
         )
         self.data[:] = 0
+        self.df_view = pd.DataFrame(self.data, columns=COLS)  # dataframe zero-copy
 
         self.shm_meta = shared_memory.SharedMemory(create=True, size=2 * 8)
         self.meta = np.ndarray((2,), dtype=np.int64, buffer=self.shm_meta.buf)
@@ -167,8 +172,8 @@ class MainWindow(QWidget):
 
         # timer
         self.timer = QTimer()
-        self.timer.timeout.connect(self.update_ui)
-        # self.timer.timeout.connect(self.update_ui_rolling)
+        # self.timer.timeout.connect(self.update_ui)
+        self.timer.timeout.connect(self.update_ui_rolling)
         self.timer.start(30)
 
     def log_msg(self, msg):
@@ -209,105 +214,151 @@ class MainWindow(QWidget):
             self.process.terminate()
             self.process.join()
 
-    def get_ordered_df(self):
-        idx = int(self.meta[0])
-        if idx == 0:
-            return None
+    # def get_ordered_df(self):
+    #     idx = int(self.meta[0])
+    #     if idx == 0:
+    #         return None
 
-        pos = idx % BUFFER_SIZE
+    #     pos = idx % BUFFER_SIZE
 
-        if idx < BUFFER_SIZE:
-            arr = self.data[:idx]
-        else:
-            arr = np.vstack((self.data[pos:], self.data[:pos]))
+    #     if idx < BUFFER_SIZE:
+    #         arr = self.data[:idx]
+    #     else:
+    #         arr = np.vstack((self.data[pos:], self.data[:pos]))
 
-        return pd.DataFrame(arr, columns=COLS)
+    #     return pd.DataFrame(arr, columns=COLS)
 
     def update_visibility(self):
         for name, cb in self.checkboxes.items():
             self.curves[name].setVisible(cb.isChecked())
 
-    def update_ui(self):
-        while not self.queue.empty():
-            self.log_msg(self.queue.get())
+    def get_views(self):
+        idx = int(self.meta[0])
+        if idx == 0:
+            return None, None
 
-        df = self.get_ordered_df()
-        if df is None:
-            return
+        pos = idx % BUFFER_SIZE
 
-        t = df["t"] - df["t"].min()
+        if idx < BUFFER_SIZE:
+            return self.df_view.iloc[:idx], None
 
-        for name in CHANNEL_NAMES:
-            if self.checkboxes[name].isChecked():
-                self.curves[name].setData(t, df[name])
+        #  deux vues, PAS UNE copie
+        return (
+            self.df_view.iloc[pos:],   # fin
+            self.df_view.iloc[:pos],   # début
+        )
 
     def update_ui_rolling(self):
         while not self.queue.empty():
             self.log_msg(self.queue.get())
 
-        df = self.get_ordered_df()
-        if df is None or df.empty:
+        views = self.get_views()
+        if views is None:
             return
 
-        t = df["t"]
-        t0 = t.max()
-        t_rel = t - t0
-
-        # rolling window filter
-        mask = t_rel >= -WINDOW_SEC
-        dfw = df[mask]
-
-        t_plot = dfw["t"] - dfw["t"].min()
+        v1, v2 = views
 
         for name in CHANNEL_NAMES:
-            if self.checkboxes[name].isChecked():
-                self.curves[name].setData(t_plot, dfw[name])   # TODO ? plante 
+            if not self.checkboxes[name].isChecked():
+                continue
 
-    def update_ui_downsampling(self):    # TODO to test ....
-        while not self.queue.empty():
-            self.log_msg(self.queue.get())
+            if v1 is not None and v2 is not None:
+                # concat logique sans copie lourde
+                t = np.concatenate((v1["t"].values, v2["t"].values))
+                y = np.concatenate((v1[name].values, v2[name].values))
+                self.curves[name].setData(t, y)
+            if v2 is None and v1 is not None:
+                t = v1["t"].values
+                y = v1[name].values
+                self.curves[name].setData(t, y)
+            if v2 is not None and v1 is None:
+                t = v1["t"].values
+                y = v1[name].values
+                self.curves[name].setData(t, y)
+            if v2 is None and v1 is None:
+                pass
 
-        df = self.get_ordered_df()
-        if df is None or df.empty:
-            return
+    # def update_ui(self):
+    #     while not self.queue.empty():
+    #         self.log_msg(self.queue.get())
 
-        t = df["t"]
-        t0 = t.max()
-        t_rel = t - t0
+    #     df = self.get_ordered_df()
+    #     if df is None:
+    #         return
 
-        # rolling window
-        mask = t_rel >= -WINDOW_SEC
-        dfw = df[mask]
+    #     t = df["t"] - df["t"].min()
 
-        if dfw.empty:
-            return
+    #     for name in CHANNEL_NAMES:
+    #         if self.checkboxes[name].isChecked():
+    #             self.curves[name].setData(t, df[name])
 
-        # downsampling
-        n = len(dfw)
-        if n > MAX_POINTS:
-            step = max(1, n // MAX_POINTS)
-            dfw = dfw.iloc[::step]
+    # def update_ui_rolling(self):
+    #     while not self.queue.empty():
+    #         self.log_msg(self.queue.get())
 
-        t_plot = dfw["t"] - dfw["t"].min()
+    #     df = self.get_ordered_df()
+    #     if df is None or df.empty:
+    #         return
 
-        for name in CHANNEL_NAMES:
-            if self.checkboxes[name].isChecked():
-                self.curves[name].setData(t_plot, dfw[name])
+    #     t = df["t"]
+    #     t0 = t.max()
+    #     t_rel = t - t0
+
+    #     # rolling window filter
+    #     mask = t_rel >= -WINDOW_SEC
+    #     dfw = df[mask]
+
+    #     t_plot = dfw["t"] - dfw["t"].min()
+
+    #     for name in CHANNEL_NAMES:
+    #         if self.checkboxes[name].isChecked():
+    #             self.curves[name].setData(t_plot, dfw[name])   # TODO ? plante 
+
+    # def update_ui_downsampling(self):    # TODO to test ....
+    #     while not self.queue.empty():
+    #         self.log_msg(self.queue.get())
+
+    #     df = self.get_ordered_df()
+    #     if df is None or df.empty:
+    #         return
+
+    #     t = df["t"]
+    #     t0 = t.max()
+    #     t_rel = t - t0
+
+    #     # rolling window
+    #     mask = t_rel >= -WINDOW_SEC
+    #     dfw = df[mask]
+
+    #     if dfw.empty:
+    #         return
+
+    #     # downsampling
+    #     n = len(dfw)
+    #     if n > MAX_POINTS:
+    #         step = max(1, n // MAX_POINTS)
+    #         dfw = dfw.iloc[::step]
+
+    #     t_plot = dfw["t"] - dfw["t"].min()
+
+    #     for name in CHANNEL_NAMES:
+    #         if self.checkboxes[name].isChecked():
+    #             self.curves[name].setData(t_plot, dfw[name])
 
 
 
 
-        # t_plot = (dfw["t"] - dfw["t"].min()).to_numpy()  # TODO test ????: min max enveloppe 
+    #     # t_plot = (dfw["t"] - dfw["t"].min()).to_numpy()  # TODO test ????: min max enveloppe 
 
-        # for name in CHANNEL_NAMES:
-        #     if not self.checkboxes[name].isChecked():
-        #         continue
+    #     # for name in CHANNEL_NAMES:
+    #     #     if not self.checkboxes[name].isChecked():
+    #     #         continue
 
-        #     y = dfw[name].to_numpy()
+    #     #     y = dfw[name].to_numpy()
 
-        #     x_ds, y_ds = downsample_minmax(t_plot, y, MAX_POINTS)
+    #     #     x_ds, y_ds = downsample_minmax(t_plot, y, MAX_POINTS)
 
-        #     self.curves[name].setData(x_ds, y_ds)
+    #     #     self.curves[name].setData(x_ds, y_ds)
 
 
 
@@ -324,16 +375,40 @@ class MainWindow(QWidget):
 
         event.accept()
 
-def main():
-    mp.set_start_method("spawn")
 
+def main():
     app = QApplication(sys.argv)
     win = MainWindow()
     win.resize(900, 600)
     win.show()
     sys.exit(app.exec())
-    
-    
+
+
 if __name__ == "__main__":
+    # import multiprocessing as mp
+    # import sys
+
     mp.freeze_support()
+
+    if sys.platform.startswith("linux"):
+        mp.set_start_method("fork", force=True)
+    else:
+        mp.set_start_method("spawn", force=True)
+
     main()
+
+# def main():
+#     mp.set_start_method("spawn")
+
+#     app = QApplication(sys.argv)
+#     win = MainWindow()
+#     win.resize(900, 600)
+#     win.show()
+#     sys.exit(app.exec())
+    
+    
+# if __name__ == "__main__":
+#     mp.freeze_support()
+#     main()
+
+
