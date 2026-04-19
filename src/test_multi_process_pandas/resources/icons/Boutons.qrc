@@ -1,0 +1,26 @@
+<RCC>
+  <qresource prefix="record">
+    <file>media-playlist-repeat.png</file>
+    <file>arrow-left-2.png</file>
+    <file>arrow-right-double-2.png</file>
+    <file>arrow-right-2.png</file>
+    <file>arrow-left-double-2.png</file>
+    <file>go-first-view.png</file>
+    <file>go-last-view.png</file>
+    <file>media-playback-pause.png</file>
+    <file>media-playback-start.png</file>
+    <file>media-playback-stop-3.png</file>
+    <file>media-record-2.png</file>
+    <file>arrow-left-2.png</file>
+    <file>arrow-right-2.png</file>
+    <file>media-playback-start.png</file>
+    <file>arrow-left-double-2.png</file>
+    <file>arrow-right-double-2.png</file>
+    <file>media-record-2.png</file>
+  </qresource>
+  <qresource prefix="icons">
+    <file>edit-clear-2.png</file>
+    <file>object-rotate-right.png</file>
+    <file>applications-utilities-3.png</file>
+  </qresource>
+</RCC>
