@@ -1,0 +1,125 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>MainWindow</class>
+ <widget class="QWidget" name="MainWindow">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>900</width>
+    <height>600</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Dynamic Channels + Legend</string>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayout">
+   <item>
+    <widget class="PlotWidget" name="plot">
+     <property name="sizePolicy">
+      <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+       <horstretch>0</horstretch>
+       <verstretch>1</verstretch>
+      </sizepolicy>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="horizontalLayout_cb">
+     <item>
+      <widget class="QCheckBox" name="cb_ch1">
+       <property name="text">
+        <string>ch1</string>
+       </property>
+       <property name="checked">
+        <bool>true</bool>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QCheckBox" name="cb_ch2">
+       <property name="text">
+        <string>ch2</string>
+       </property>
+       <property name="checked">
+        <bool>true</bool>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QCheckBox" name="cb_ch3">
+       <property name="text">
+        <string>ch3</string>
+       </property>
+       <property name="checked">
+        <bool>true</bool>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <widget class="QPushButton" name="btn_start">
+     <property name="text">
+      <string>Start</string>
+     </property>
+     <property name="icon">
+      <iconset resource="../resources/icons/Boutons.qrc">
+       <normaloff>:/record/media-playback-start.png</normaloff>:/record/media-playback-start.png</iconset>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QPushButton" name="btn_pause">
+     <property name="text">
+      <string>Pause</string>
+     </property>
+     <property name="icon">
+      <iconset resource="../resources/icons/Boutons.qrc">
+       <normaloff>:/record/media-playback-pause.png</normaloff>:/record/media-playback-pause.png</iconset>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QPushButton" name="btn_stop">
+     <property name="text">
+      <string>Stop</string>
+     </property>
+     <property name="icon">
+      <iconset resource="../resources/icons/Boutons.qrc">
+       <normaloff>:/record/media-playback-stop-3.png</normaloff>:/record/media-playback-stop-3.png</iconset>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QPushButton" name="btn_kill">
+     <property name="text">
+      <string>Kill</string>
+     </property>
+     <property name="icon">
+      <iconset resource="../resources/icons/Boutons.qrc">
+       <normaloff>:/icons/process-stop.png</normaloff>:/icons/process-stop.png</iconset>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QTextEdit" name="log">
+     <property name="readOnly">
+      <bool>true</bool>
+     </property>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <customwidgets>
+  <customwidget>
+   <class>PlotWidget</class>
+   <extends>QWidget</extends>
+   <header>pyqtgraph</header>
+  </customwidget>
+ </customwidgets>
+ <resources>
+  <include location="../resources/icons/Boutons.qrc"/>
+ </resources>
+ <connections/>
+</ui>

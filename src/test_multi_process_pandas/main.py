@@ -4,14 +4,16 @@ import multiprocessing as mp
 import numpy as np
 import pandas as pd
 
+from pathlib import Path
 from multiprocessing import shared_memory
-from PyQt6.QtWidgets import (
-    QApplication, QWidget, QVBoxLayout, QPushButton,
-    QTextEdit, QCheckBox, QHBoxLayout
-)
-from PyQt6.QtCore import QTimer
+from PyQt6.QtWidgets import QApplication, QWidget
+from PyQt6.QtCore import QThread, QObject, pyqtSignal
+from PyQt6 import uic
 
 import pyqtgraph as pg
+
+# importer Boutons_rc enregistre les ressources Qt (:/record/... :/icons/...)
+from test_multi_process_pandas.resources.icons import Boutons_rc  # noqa: F401
 
 BUFFER_SIZE = 1000
 CHANNEL_NAMES = ["ch1", "ch2", "ch3"]
@@ -89,62 +91,42 @@ def acq_worker(data_name, meta_name, queue, pause_event, stop_event):
     shm_data.close()
     shm_meta.close()
 
+class DataWatcher(QObject):
+    data_ready = pyqtSignal(int)
+
+    def __init__(self, mp_queue):
+        super().__init__()
+        self._queue = mp_queue
+        self._running = True
+
+    def run(self):
+        while self._running:
+            try:
+                idx = self._queue.get(timeout=0.1)
+                self.data_ready.emit(idx)
+            except mp.queues.Empty:
+                pass
+
+    def stop(self):
+        self._running = False
+
+
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
 
-        self.setWindowTitle("Dynamic Channels + Legend")
+        uic.loadUi(Path(__file__).parent / "views" / "main.ui", self)
 
-        layout = QVBoxLayout()
-
-        # plot
-        self.plot = pg.PlotWidget()
-        # self.plot = pg.PlotWidget(axisItems={'bottom': pg.DateAxisItem()})
-        # self.legend = self.plot.addLegend()
-
-        # axis = pg.DateAxisItem()
-        # axis.setFormat('%H:%M:%S')  # heures:minutes:secondes
-        # self.plot = pg.PlotWidget(axisItems={'bottom': axis})
-
-
+        # DateAxisItem ne peut pas être défini dans Qt Designer
+        self.plot.getPlotItem().setAxisItems({'bottom': pg.DateAxisItem()})
 
         # curves dict
-        self.curves = {}
+        self.curves = {name: self.plot.plot(name=name) for name in CHANNEL_NAMES}
 
-        for i, name in enumerate(CHANNEL_NAMES):
-            curve = self.plot.plot(name=name)
-            self.curves[name] = curve
-
-        # checkboxes
-        self.checkboxes = {}
-        cb_layout = QHBoxLayout()
-
-        for name in CHANNEL_NAMES:
-            cb = QCheckBox(name)
-            cb.setChecked(True)
+        # checkboxes dict mappé depuis les widgets du .ui (cb_ch1, cb_ch2, cb_ch3)
+        self.checkboxes = {name: getattr(self, f"cb_{name}") for name in CHANNEL_NAMES}
+        for cb in self.checkboxes.values():
             cb.stateChanged.connect(self.update_visibility)
-            self.checkboxes[name] = cb
-            cb_layout.addWidget(cb)
-
-        # log
-        self.log = QTextEdit()
-        self.log.setReadOnly(True)
-
-        # buttons
-        self.btn_start = QPushButton("Start")
-        self.btn_pause = QPushButton("Pause")
-        self.btn_stop = QPushButton("Stop")
-        self.btn_kill = QPushButton("Kill")
-
-        layout.addWidget(self.plot)
-        layout.addLayout(cb_layout)
-        layout.addWidget(self.btn_start)
-        layout.addWidget(self.btn_pause)
-        layout.addWidget(self.btn_stop)
-        layout.addWidget(self.btn_kill)
-        layout.addWidget(self.log)
-
-        self.setLayout(layout)
 
         # shared memory
         self.shm_data = shared_memory.SharedMemory(
@@ -176,11 +158,13 @@ class MainWindow(QWidget):
         self.btn_stop.clicked.connect(self.stop_acq)
         self.btn_kill.clicked.connect(self.kill_acq)
 
-        # timer
-        self.timer = QTimer()
-        # self.timer.timeout.connect(self.update_ui)
-        self.timer.timeout.connect(self.update_ui_rolling)
-        self.timer.start(30)
+        # watcher thread : surveille la queue du process et émet data_ready
+        self.watcher = DataWatcher(self.queue)
+        self.watcher_thread = QThread()
+        self.watcher.moveToThread(self.watcher_thread)
+        self.watcher_thread.started.connect(self.watcher.run)
+        self.watcher.data_ready.connect(self.on_data_ready)
+        self.watcher_thread.start()
 
     def log_msg(self, msg):
         self.log.append(str(msg))
@@ -254,10 +238,11 @@ class MainWindow(QWidget):
             self.df_view.iloc[:pos],   # début
         )
 
-    def update_ui_rolling(self):
-        while not self.queue.empty():
-            self.log_msg(self.queue.get())
+    def on_data_ready(self, idx):
+        self.log_msg(idx)
+        self.update_ui_rolling()
 
+    def update_ui_rolling(self):
         views = self.get_views()
         if views is None:
             return
@@ -369,6 +354,10 @@ class MainWindow(QWidget):
 
 
     def closeEvent(self, event):
+        self.watcher.stop()
+        self.watcher_thread.quit()
+        self.watcher_thread.wait()
+
         if self.process:
             self.process.terminate()
             self.process.join()
