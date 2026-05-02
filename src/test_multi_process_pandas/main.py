@@ -12,8 +12,21 @@ from PyQt6 import uic
 
 import pyqtgraph as pg
 
-# importer Boutons_rc enregistre les ressources Qt (:/record/... :/icons/...)
+# enregistre les ressources Qt (:/record/... :/icons/...) avant tout setupUi()
 from test_multi_process_pandas.resources.icons import Boutons_rc  # noqa: F401
+
+_UI_SRC = Path(__file__).parent / "views" / "main.ui"
+_UI_PY  = Path(__file__).parent / "views" / "ui_main.py"
+
+
+def _compile_ui():
+    """Recompile views/main.ui → views/ui_main.py si le .ui est plus récent."""
+    if not _UI_PY.exists() or _UI_SRC.stat().st_mtime > _UI_PY.stat().st_mtime:
+        with open(_UI_PY, "w", encoding="utf-8") as fout:
+            uic.compileUi(str(_UI_SRC), fout)
+
+_compile_ui()
+from test_multi_process_pandas.views.ui_main import Ui_MainWindow  # noqa: E402
 
 BUFFER_SIZE = 1000
 CHANNEL_NAMES = ["ch1", "ch2", "ch3"]
@@ -24,7 +37,7 @@ WINDOW_SEC = 5.0  # last N seconds for
 SLEEP_LOOP = 0.05
 
 
-pg.setConfigOptions(useOpenGL=False)  # TODO acceleration OpenGL (to test)
+pg.setConfigOptions(useOpenGL=True)  # TODO acceleration OpenGL (to test)
 
 # def downsample_minmax(x, y, max_points):
 #     n = len(x)
@@ -111,11 +124,10 @@ class DataWatcher(QObject):
         self._running = False
 
 
-class MainWindow(QWidget):
+class MainWindow(QWidget, Ui_MainWindow):
     def __init__(self):
         super().__init__()
-
-        uic.loadUi(Path(__file__).parent / "views" / "main.ui", self)
+        self.setupUi(self)
 
         # DateAxisItem ne peut pas être défini dans Qt Designer
         self.plot.getPlotItem().setAxisItems({'bottom': pg.DateAxisItem()})
