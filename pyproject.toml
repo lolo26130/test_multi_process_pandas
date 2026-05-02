@@ -1,23 +1,22 @@
 [project]
 name = "test_multi_process_pandas"
 version = "2026.0.1"
-description = "exemple of multiprocesst"
+description = "exemple of multiprocess"
 dependencies = [
-    "pandas",
-    "numpy",
-    "PyQt6",
-    "pyqtgraph>=0.13.7",
+    "pandas==2.2.3",
+    "numpy==1.26.4",
+    "PyQt6==6.4.2",
+    "pyqtgraph==0.13.7"
 ]
-requires-python = ">=3.9"
+requires-python = "==3.11.15"
 authors = [{ name = "Lolo"}]
 license = "GPL-3.0-or-later"
 # license = { file = "LICENSE" }
 
-# classifiers = [
-#     "Programming Language :: Python :: 3",
-#     "Operating System :: OS Independent"
-# ]
-#
+
+
+
+
 classifiers = [
   # How mature is this project? Common values are
   #   3 - Alpha
@@ -49,10 +48,18 @@ build-backend = "setuptools.build_meta"
 [tool.uv.workspace]
 members = [
     ".",
+    ".",
+    ".",
+    ".",
+    ".",
+    ".",
 ]
 
 [tool.uv.sources]
 test-multi-process-pandas = { workspace = true, editable = true }
+
+[tool.uv.extra-build-dependencies]
+      numpy = ["distutils.msvccompiler"]
 
 [dependency-groups]
 dev = [
@@ -63,7 +70,6 @@ dev = [
 #
 # [project.scripts]
 # process-net-monitor = "process_net_monitor.cli:main"
-
 
 
 #requires = [

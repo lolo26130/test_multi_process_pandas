@@ -2,14 +2,14 @@
 #    uv pip compile pyproject.toml -o requirements.txt
 colorama==0.4.6
     # via pyqtgraph
-numpy==1.26.4
+numpy==2.4.4
     # via
     #   test-multi-process-pandas (pyproject.toml)
     #   pandas
     #   pyqtgraph
 pandas==1.0.3
     # via test-multi-process-pandas (pyproject.toml)
-pyqt6==6.4.2
+pyqt6==6.11.0
     # via test-multi-process-pandas (pyproject.toml)
 pyqt6-qt6==6.11.0
     # via pyqt6

@@ -98,9 +98,15 @@ class MainWindow(QWidget):
         layout = QVBoxLayout()
 
         # plot
-        # self.plot = pg.PlotWidget()
-        self.plot = pg.PlotWidget(axisItems={'bottom': pg.DateAxisItem()})
-        self.legend = self.plot.addLegend()
+        self.plot = pg.PlotWidget()
+        # self.plot = pg.PlotWidget(axisItems={'bottom': pg.DateAxisItem()})
+        # self.legend = self.plot.addLegend()
+
+        # axis = pg.DateAxisItem()
+        # axis.setFormat('%H:%M:%S')  # heures:minutes:secondes
+        # self.plot = pg.PlotWidget(axisItems={'bottom': axis})
+
+
 
         # curves dict
         self.curves = {}
