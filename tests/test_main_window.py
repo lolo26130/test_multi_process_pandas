@@ -123,19 +123,19 @@ class TestUIState:
         assert win.curves["ch2"].isVisible()
         assert win.curves["ch3"].isVisible()
 
-    def test_toggle_pause_sets_event(self, win):
+    def test_on_btn_pause_clicked_sets_event(self, win):
         assert not win.pause_event.is_set()
-        win.toggle_pause()
+        win.on_btn_pause_clicked()
         assert win.pause_event.is_set()
 
-    def test_toggle_pause_clears_event(self, win):
-        win.toggle_pause()
-        win.toggle_pause()
+    def test_on_btn_pause_clicked_clears_event(self, win):
+        win.on_btn_pause_clicked()
+        win.on_btn_pause_clicked()
         assert not win.pause_event.is_set()
 
-    def test_stop_acq_sets_stop_event(self, win):
-        """stop_acq() lève stop_event (même sans processus actif)."""
+    def test_on_btn_stop_clicked_sets_stop_event(self, win):
+        """on_btn_stop_clicked() lève stop_event (même sans processus actif)."""
         import multiprocessing as mp
         win.process = mp.Process(target=lambda: None)  # dummy — non démarré
-        win.stop_acq()
+        win.on_btn_stop_clicked()
         assert win.stop_event.is_set()

@@ -58,6 +58,18 @@ intersphinx_mapping = {
 }
 
 # ---------------------------------------------------------------------------
+# Références croisées non résolues — packages sans inventaire intersphinx
+# (PyQt6 et pyqtgraph ne publient pas d'objects.inv)
+# ---------------------------------------------------------------------------
+nitpick_ignore = [
+    ("py:class", "PyQt6.QtCore.QObject"),
+    ("py:class", "PyQt6.QtCore.QThread"),
+    ("py:class", "PyQt6.QtWidgets.QWidget"),
+    ("py:class", "pyqtgraph.PlotDataItem"),
+    ("py:func",  "numpy.ndarray"),          # ndarray est une classe, pas une fonction
+]
+
+# ---------------------------------------------------------------------------
 # Chemins et patterns
 # ---------------------------------------------------------------------------
 templates_path   = ["_templates"]

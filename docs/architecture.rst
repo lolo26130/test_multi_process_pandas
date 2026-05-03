@@ -156,13 +156,13 @@ Les icônes des boutons sont embarquées dans
      - Action
    * - Start
      - media-playback-start
-     - :meth:`~test_multi_process_pandas.main.MainWindow.start_acq`
+     - :meth:`~test_multi_process_pandas.main.MainWindow.on_btn_start_clicked`
    * - Pause
      - media-playback-pause
-     - :meth:`~test_multi_process_pandas.main.MainWindow.toggle_pause`
+     - :meth:`~test_multi_process_pandas.main.MainWindow.on_btn_pause_clicked`
    * - Stop
      - media-playback-stop
-     - :meth:`~test_multi_process_pandas.main.MainWindow.stop_acq`
+     - :meth:`~test_multi_process_pandas.main.MainWindow.on_btn_stop_clicked`
    * - Kill
      - process-stop
-     - :meth:`~test_multi_process_pandas.main.MainWindow.kill_acq`
+     - :meth:`~test_multi_process_pandas.main.MainWindow.on_btn_kill_clicked`

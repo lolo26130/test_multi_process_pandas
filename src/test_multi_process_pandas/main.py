@@ -7,7 +7,7 @@ import pandas as pd
 from pathlib import Path
 from multiprocessing import shared_memory
 from PyQt6.QtWidgets import QApplication, QWidget
-from PyQt6.QtCore import QThread, QObject, pyqtSignal
+from PyQt6.QtCore import QThread, QObject, pyqtSignal, pyqtSlot
 from PyQt6 import uic
 
 import pyqtgraph as pg
@@ -230,12 +230,6 @@ class MainWindow(QWidget, Ui_MainWindow):
         self.process = None
         self.paused = False
 
-        # signals
-        self.btn_start.clicked.connect(self.start_acq)
-        self.btn_pause.clicked.connect(self.toggle_pause)
-        self.btn_stop.clicked.connect(self.stop_acq)
-        self.btn_kill.clicked.connect(self.kill_acq)
-
         # watcher thread : surveille la queue du process et émet data_ready
         self.watcher = DataWatcher(self.queue)
         self.watcher_thread = QThread()
@@ -248,7 +242,8 @@ class MainWindow(QWidget, Ui_MainWindow):
         """Ajoute une ligne dans le QTextEdit de log."""
         self.log.append(str(msg))
 
-    def start_acq(self):
+    @pyqtSlot()
+    def on_btn_start_clicked(self):
         """Démarre le processus d'acquisition s'il n'est pas déjà actif.
 
         Réinitialise les événements stop et pause avant de lancer acq_worker
@@ -272,7 +267,8 @@ class MainWindow(QWidget, Ui_MainWindow):
         )
         self.process.start()
 
-    def toggle_pause(self):
+    @pyqtSlot()
+    def on_btn_pause_clicked(self):
         """Bascule l'état pause/reprise de l'acquisition.
 
         Lève ou efface pause_event, que acq_worker lit à chaque itération.
@@ -283,12 +279,14 @@ class MainWindow(QWidget, Ui_MainWindow):
         else:
             self.pause_event.clear()
 
-    def stop_acq(self):
+    @pyqtSlot()
+    def on_btn_stop_clicked(self):
         """Arrêt gracieux : lève stop_event pour que acq_worker termine sa boucle."""
         if self.process:
             self.stop_event.set()
 
-    def kill_acq(self):
+    @pyqtSlot()
+    def on_btn_kill_clicked(self):
         """Arrêt forcé : envoie SIGTERM au processus et attend sa terminaison."""
         if self.process and self.process.is_alive():
             self.process.terminate()
