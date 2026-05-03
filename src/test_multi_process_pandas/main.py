@@ -18,7 +18,6 @@ from test_multi_process_pandas.resources.icons import Boutons_rc  # noqa: F401
 _UI_SRC = Path(__file__).parent / "views" / "main.ui"
 _UI_PY  = Path(__file__).parent / "views" / "ui_main.py"
 
-
 def _compile_ui():
     """Recompile views/main.ui → views/ui_main.py si le .ui est plus récent."""
     if not _UI_PY.exists() or _UI_SRC.stat().st_mtime > _UI_PY.stat().st_mtime:
