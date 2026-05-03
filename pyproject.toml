@@ -64,6 +64,10 @@ test-multi-process-pandas = { workspace = true, editable = true }
 [dependency-groups]
 dev = [
     "pyinstaller>=6.19.0",
+    "pytest>=9.0.3",
+    "pytest-qt>=4.5.0",
+    "sphinx>=9.0.4",
+    "sphinx-rtd-theme>=3.1.0",
     "test-multi-process-pandas",
 ]
 
@@ -72,7 +76,9 @@ dev = [
 # process-net-monitor = "process_net_monitor.cli:main"
 
 
-#requires = [
-#    "setuptools>=42",
-#    "wheel"
-#]
+[tool.pytest.ini_options]
+testpaths   = ["tests"]
+qt_api      = "pyqt6"
+
+[tool.pytest.ini_options.env]
+QT_QPA_PLATFORM = "offscreen"

@@ -28,12 +28,20 @@ def _compile_ui():
 _compile_ui()
 from test_multi_process_pandas.views.ui_main import Ui_MainWindow  # noqa: E402
 
+#: Nombre de lignes du buffer circulaire en mémoire partagée.
 BUFFER_SIZE = 1000
+
+#: Noms des canaux acquis. Chaque entrée correspond à une colonne de données
+#: et à une checkbox / courbe dans l'interface.
 CHANNEL_NAMES = ["ch1", "ch2", "ch3"]
+
 COLS = ["t"] + CHANNEL_NAMES
 N_CHANNELS = len(CHANNEL_NAMES)
 
 WINDOW_SEC = 5.0  # last N seconds for
+
+#: Période d'échantillonnage du worker (secondes). Détermine la fréquence
+#: d'acquisition (≈ 1 / SLEEP_LOOP Hz).
 SLEEP_LOOP = 0.05
 
 
@@ -68,6 +76,24 @@ pg.setConfigOptions(useOpenGL=True)  # TODO acceleration OpenGL (to test)
 #     return np.array(x_out), np.array(y_out)
 
 def acq_worker(data_name, meta_name, queue, pause_event, stop_event):
+    """Worker d'acquisition exécuté dans un processus séparé (multiprocessing).
+
+    Génère des signaux synthétiques (sin/cos bruités) et les écrit dans un
+    buffer circulaire en mémoire partagée sans copie. Chaque échantillon
+    contient le timestamp Unix suivi des N_CHANNELS valeurs.
+
+    La progression est signalée au processus principal via *queue* (idx courant).
+    L'envoi dans la queue est limité (qsize < 10) pour éviter l'accumulation.
+
+    Args:
+        data_name: nom du segment SharedMemory portant le buffer de données
+                   (BUFFER_SIZE × (N_CHANNELS+1) float64).
+        meta_name: nom du segment SharedMemory portant le compteur d'index
+                   (tableau int64[2], seul meta[0] est utilisé).
+        queue:     mp.Queue de notification vers le thread DataWatcher.
+        pause_event: mp.Event levé pour suspendre l'acquisition.
+        stop_event:  mp.Event levé pour terminer la boucle proprement.
+    """
     shm_data = shared_memory.SharedMemory(name=data_name)
     shm_meta = shared_memory.SharedMemory(name=meta_name)
 
@@ -105,14 +131,38 @@ def acq_worker(data_name, meta_name, queue, pause_event, stop_event):
     shm_meta.close()
 
 class DataWatcher(QObject):
+    """Pont entre la mp.Queue du processus d'acquisition et le système de signaux Qt.
+
+    Vit dans un QThread dédié. Bloque sur mp.Queue.get() avec un timeout de
+    100 ms, ce qui permet à la boucle de se terminer proprement sans polling
+    actif. Chaque idx reçu est retransmis au thread GUI via le signal data_ready,
+    qui est automatiquement mis en file (queued connection) par Qt.
+
+    Signal:
+        data_ready(int): émis avec l'index d'échantillon courant dès qu'un
+                         nouveau lot de données est disponible en mémoire partagée.
+    """
+
+    #: Émis avec l'index courant (``meta[0]``) dès qu'un nouvel échantillon
+    #: est disponible en mémoire partagée. Connecté à
+    #: :meth:`~test_multi_process_pandas.main.MainWindow.on_data_ready`
+    #: via une queued connection Qt (thread-safe).
     data_ready = pyqtSignal(int)
 
     def __init__(self, mp_queue):
+        """Args:
+            mp_queue: la mp.Queue produite par acq_worker à surveiller.
+        """
         super().__init__()
         self._queue = mp_queue
         self._running = True
 
     def run(self):
+        """Boucle de surveillance, à connecter à QThread.started.
+
+        Bloque sur la queue avec un timeout de 100 ms pour rester réactif
+        à l'appel de stop() sans consommer de CPU inutilement.
+        """
         while self._running:
             try:
                 idx = self._queue.get(timeout=0.1)
@@ -121,11 +171,27 @@ class DataWatcher(QObject):
                 pass
 
     def stop(self):
+        """Demande l'arrêt propre de la boucle run() au prochain timeout."""
         self._running = False
 
 
 class MainWindow(QWidget, Ui_MainWindow):
+    """Fenêtre principale de l'application.
+
+    Hérite de QWidget (widget racine) et de Ui_MainWindow (layout compilé depuis
+    views/main.ui). Orchestre trois composants indépendants :
+
+    - Le processus d'acquisition (acq_worker) qui écrit dans la mémoire partagée.
+    - Le thread DataWatcher qui surveille la mp.Queue et émet data_ready.
+    - L'affichage pyqtgraph mis à jour sur réception du signal data_ready.
+
+    La mémoire partagée est organisée en buffer circulaire de BUFFER_SIZE lignes ×
+    (1 timestamp + N_CHANNELS valeurs). Un DataFrame pandas en vue zero-copy
+    (df_view) permet de lire ce buffer sans allocation supplémentaire.
+    """
+
     def __init__(self):
+        """Initialise la fenêtre : UI, mémoire partagée, processus et thread watcher."""
         super().__init__()
         self.setupUi(self)
 
@@ -179,9 +245,15 @@ class MainWindow(QWidget, Ui_MainWindow):
         self.watcher_thread.start()
 
     def log_msg(self, msg):
+        """Ajoute une ligne dans le QTextEdit de log."""
         self.log.append(str(msg))
 
     def start_acq(self):
+        """Démarre le processus d'acquisition s'il n'est pas déjà actif.
+
+        Réinitialise les événements stop et pause avant de lancer acq_worker
+        dans un nouveau mp.Process. Sans effet si un processus tourne déjà.
+        """
         if self.process and self.process.is_alive():
             return
 
@@ -201,6 +273,10 @@ class MainWindow(QWidget, Ui_MainWindow):
         self.process.start()
 
     def toggle_pause(self):
+        """Bascule l'état pause/reprise de l'acquisition.
+
+        Lève ou efface pause_event, que acq_worker lit à chaque itération.
+        """
         self.paused = not self.paused
         if self.paused:
             self.pause_event.set()
@@ -208,11 +284,13 @@ class MainWindow(QWidget, Ui_MainWindow):
             self.pause_event.clear()
 
     def stop_acq(self):
+        """Arrêt gracieux : lève stop_event pour que acq_worker termine sa boucle."""
         if self.process:
             self.stop_event.set()
 
     def kill_acq(self):
-        if self.process:
+        """Arrêt forcé : envoie SIGTERM au processus et attend sa terminaison."""
+        if self.process and self.process.is_alive():
             self.process.terminate()
             self.process.join()
 
@@ -231,10 +309,24 @@ class MainWindow(QWidget, Ui_MainWindow):
     #     return pd.DataFrame(arr, columns=COLS)
 
     def update_visibility(self):
+        """Affiche ou masque chaque courbe selon l'état de sa checkbox associée."""
         for name, cb in self.checkboxes.items():
             self.curves[name].setVisible(cb.isChecked())
 
     def get_views(self):
+        """Retourne une ou deux vues pandas zero-copy sur le buffer circulaire,
+        dans l'ordre chronologique des données.
+
+        Le buffer est rempli en spirale (pos = idx % BUFFER_SIZE). Quand il
+        n'est pas encore plein (idx < BUFFER_SIZE), une seule vue suffit.
+        Une fois plein, deux vues contiguës sont nécessaires : la partie
+        [pos:] (ancienne) suivie de [:pos] (récente).
+
+        Returns:
+            (v1, None)  si le buffer est partiellement rempli.
+            (v1, v2)    si le buffer est plein (v1 ancienne, v2 récente).
+            (None, None) si aucune donnée n'a encore été écrite.
+        """
         idx = int(self.meta[0])
         if idx == 0:
             return None, None
@@ -251,10 +343,24 @@ class MainWindow(QWidget, Ui_MainWindow):
         )
 
     def on_data_ready(self, idx):
+        """Slot connecté à DataWatcher.data_ready (thread GUI).
+
+        Reçoit l'index de l'échantillon nouvellement écrit en mémoire partagée,
+        le journalise, puis déclenche la mise à jour du graphe.
+
+        Args:
+            idx: index courant du buffer (meta[0] dans la mémoire partagée).
+        """
         self.log_msg(idx)
         self.update_ui_rolling()
 
     def update_ui_rolling(self):
+        """Met à jour les courbes pyqtgraph à partir de l'état courant du buffer.
+
+        Lit les vues zero-copy via get_views() et concatène les segments numpy
+        (np.concatenate) sans copie lourde pour reconstruire l'axe temporel
+        continu. Seules les courbes dont la checkbox est cochée sont rafraîchies.
+        """
         views = self.get_views()
         if views is None:
             return
@@ -366,11 +472,18 @@ class MainWindow(QWidget, Ui_MainWindow):
 
 
     def closeEvent(self, event):
+        """Nettoyage ordonné à la fermeture de la fenêtre.
+
+        Ordre d'arrêt : thread DataWatcher → processus acq_worker → segments
+        de mémoire partagée. Les segments sont explicitement détruits (unlink)
+        pour éviter des fuites sur le système (les SharedMemory POSIX persistent
+        au-delà du processus Python si non unlinkés).
+        """
         self.watcher.stop()
         self.watcher_thread.quit()
         self.watcher_thread.wait()
 
-        if self.process:
+        if self.process and self.process.is_alive():
             self.process.terminate()
             self.process.join()
 
@@ -384,6 +497,12 @@ class MainWindow(QWidget, Ui_MainWindow):
 
 
 def main():
+    """Point d'entrée de l'application Qt.
+
+    Crée la QApplication, instancie MainWindow et entre dans la boucle
+    d'événements. Doit être appelé après freeze_support() et la sélection
+    de la méthode de démarrage multiprocessing.
+    """
     app = QApplication(sys.argv)
     win = MainWindow()
     win.resize(900, 600)
