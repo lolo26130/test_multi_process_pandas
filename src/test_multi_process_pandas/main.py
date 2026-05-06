@@ -18,6 +18,7 @@ from test_multi_process_pandas.resources.icons import Boutons_rc  # noqa: F401
 _UI_SRC = Path(__file__).parent / "views" / "main.ui"
 _UI_PY  = Path(__file__).parent / "views" / "ui_main.py"
 
+
 def _compile_ui():
     """Recompile views/main.ui → views/ui_main.py si le .ui est plus récent."""
     if not _UI_PY.exists() or _UI_SRC.stat().st_mtime > _UI_PY.stat().st_mtime:
@@ -27,24 +28,38 @@ def _compile_ui():
 _compile_ui()
 from test_multi_process_pandas.views.ui_main import Ui_MainWindow  # noqa: E402
 
-#: Nombre de lignes du buffer circulaire en mémoire partagée.
-BUFFER_SIZE = 1000
+#: Fréquence d'échantillonnage audio en Hz.
+#: 48000 = taux natif du codec ALSA (hw:1,0 SN6140). Ne pas utiliser 44100 sur
+#: ce périphérique — le driver ALSA direct ne fait pas de conversion de fréquence.
+SAMPLE_RATE = 48000
 
-#: Noms des canaux acquis. Chaque entrée correspond à une colonne de données
-#: et à une checkbox / courbe dans l'interface.
+#: Nombre de frames audio lues par bloc (latence ≈ CHUNK_SIZE / SAMPLE_RATE s).
+CHUNK_SIZE = 1024
+
+#: Taille du buffer circulaire en frames — correspond à SAMPLE_RATE * 2 secondes d'audio.
+BUFFER_SIZE = SAMPLE_RATE * 2
+
+#: Noms des canaux : ch1 = gauche, ch2 = droite, ch3 = différence (ch2 − ch1).
+#: Chaque entrée correspond à une colonne de données et à une checkbox dans l'interface.
 CHANNEL_NAMES = ["ch1", "ch2", "ch3"]
 
 COLS = ["t"] + CHANNEL_NAMES
 N_CHANNELS = len(CHANNEL_NAMES)
 
-WINDOW_SEC = 5.0  # last N seconds for
-
-#: Période d'échantillonnage du worker (secondes). Détermine la fréquence
-#: d'acquisition (≈ 1 / SLEEP_LOOP Hz).
+#: Durée de sommeil (s) pendant la pause — laisse le CPU libre entre deux vérifications.
 SLEEP_LOOP = 0.05
 
+#: Période minimale (s) entre deux rafraîchissements du graphe (≈ 30 Hz).
+PLOT_PERIOD = 1.0 / 30.0
 
-pg.setConfigOptions(useOpenGL=True)  # TODO acceleration OpenGL (to test)
+#: Période minimale (s) entre deux entrées dans le log (≈ 2 Hz).
+LOG_PERIOD = 0.5
+
+#: Nombre maximum de lignes conservées dans le log.
+LOG_MAX_LINES = 200
+
+
+pg.setConfigOptions(useOpenGL=False)  # OpenGL désactivé : QOpenGLWidget non supporté sur ce système
 
 # def downsample_minmax(x, y, max_points):
 #     n = len(x)
@@ -74,25 +89,46 @@ pg.setConfigOptions(useOpenGL=True)  # TODO acceleration OpenGL (to test)
 
 #     return np.array(x_out), np.array(y_out)
 
-def acq_worker(data_name, meta_name, queue, pause_event, stop_event):
-    """Worker d'acquisition exécuté dans un processus séparé (multiprocessing).
+def acq_worker(data_name, meta_name, queue, pause_event, stop_event,
+               _stream_factory=None):
+    """Worker d'acquisition audio exécuté dans un processus séparé (multiprocessing).
 
-    Génère des signaux synthétiques (sin/cos bruités) et les écrit dans un
-    buffer circulaire en mémoire partagée sans copie. Chaque échantillon
-    contient le timestamp Unix suivi des N_CHANNELS valeurs.
+    Ouvre le périphérique d'entrée par défaut via sounddevice en mode stéréo et
+    lit des blocs de CHUNK_SIZE frames à SAMPLE_RATE Hz. Chaque bloc est écrit
+    en une seule opération numpy dans le buffer circulaire en mémoire partagée.
+
+    sounddevice est importé à l'intérieur de la fonction pour éviter que PortAudio
+    soit initialisé dans le processus parent avant le fork (ce qui corromprait
+    l'état du backend audio dans le processus enfant).
+
+    Canaux écrits :
+        - col 0 : timestamp Unix de chaque frame (interpolé sur le bloc).
+        - col 1 (ch1) : canal gauche (float64, normalisé −1 … +1).
+        - col 2 (ch2) : canal droit  (float64, normalisé −1 … +1).
+        - col 3 (ch3) : différence ch2 − ch1.
 
     La progression est signalée au processus principal via *queue* (idx courant).
     L'envoi dans la queue est limité (qsize < 10) pour éviter l'accumulation.
 
     Args:
-        data_name: nom du segment SharedMemory portant le buffer de données
-                   (BUFFER_SIZE × (N_CHANNELS+1) float64).
-        meta_name: nom du segment SharedMemory portant le compteur d'index
-                   (tableau int64[2], seul meta[0] est utilisé).
-        queue:     mp.Queue de notification vers le thread DataWatcher.
-        pause_event: mp.Event levé pour suspendre l'acquisition.
-        stop_event:  mp.Event levé pour terminer la boucle proprement.
+        data_name:        nom du segment SharedMemory portant le buffer de données
+                          (BUFFER_SIZE × (N_CHANNELS+1) float64).
+        meta_name:        nom du segment SharedMemory portant le compteur d'index
+                          (tableau int64[2], seul meta[0] est utilisé).
+        queue:            mp.Queue de notification vers le thread DataWatcher.
+        pause_event:      mp.Event levé pour suspendre l'acquisition sans fermer le stream.
+        stop_event:       mp.Event levé pour terminer la boucle proprement.
+        _stream_factory:  callable() → context manager compatible sounddevice.InputStream.
+                          Si None, utilise sounddevice avec les constantes du module.
+                          Réservé aux tests (injection de FakeInputStream).
     """
+    import sounddevice as sd  # import après le fork — PortAudio initialisé dans l'enfant
+
+    if _stream_factory is None:
+        def _stream_factory():
+            return sd.InputStream(samplerate=SAMPLE_RATE, channels=2,
+                                  dtype="float32", blocksize=CHUNK_SIZE)
+
     shm_data = shared_memory.SharedMemory(name=data_name)
     shm_meta = shared_memory.SharedMemory(name=meta_name)
 
@@ -100,31 +136,49 @@ def acq_worker(data_name, meta_name, queue, pause_event, stop_event):
     meta = np.ndarray((2,), dtype=np.int64, buffer=shm_meta.buf)
 
     idx = 0
-    k = 10
 
-    while not stop_event.is_set():
-        if pause_event.is_set():
-            time.sleep(0.05)
-            continue
+    with _stream_factory() as stream:
+        while not stop_event.is_set():
+            if pause_event.is_set():
+                time.sleep(SLEEP_LOOP)
+                continue
 
-        t = time.time()
+            audio, _ = stream.read(CHUNK_SIZE)   # shape : (CHUNK_SIZE, 2), float32
+            n = len(audio)
 
-        values = np.array([
-            np.sin(idx * 0.1) + np.random.randn(1)[0] / k,
-            np.cos(idx * 0.1) + np.random.randn(1)[0] / k,
-            np.sin(idx * 0.05) + np.random.randn(1)[0] / k,
-        ])
+            # Timestamps interpolés sur le bloc
+            t_end    = time.time()
+            t_start  = t_end - n / SAMPLE_RATE
+            timestamps = t_start + np.arange(n) / SAMPLE_RATE
 
-        pos = idx % BUFFER_SIZE
-        data[pos, 0] = t
-        data[pos, 1:] = values
+            # Cast float32 → float64 (format du buffer shared memory)
+            left  = audio[:, 0].astype(np.float64)
+            right = audio[:, 1].astype(np.float64)
+            diff  = right - left
 
-        idx += 1
-        meta[0] = idx
+            # Écriture en bulk dans le buffer circulaire (gestion du wrap-around)
+            start = idx % BUFFER_SIZE
+            if start + n <= BUFFER_SIZE:
+                data[start:start + n, 0] = timestamps
+                data[start:start + n, 1] = left
+                data[start:start + n, 2] = right
+                data[start:start + n, 3] = diff
+            else:
+                first = BUFFER_SIZE - start
+                data[start:,        0] = timestamps[:first]
+                data[start:,        1] = left[:first]
+                data[start:,        2] = right[:first]
+                data[start:,        3] = diff[:first]
+                data[:n - first,    0] = timestamps[first:]
+                data[:n - first,    1] = left[first:]
+                data[:n - first,    2] = right[first:]
+                data[:n - first,    3] = diff[first:]
 
-        if queue.qsize() < 10:
-            queue.put(idx)
-        time.sleep(SLEEP_LOOP)
+            idx += n
+            meta[0] = idx
+
+            if queue.qsize() < 10:
+                queue.put(idx)
 
     shm_data.close()
     shm_meta.close()
@@ -197,8 +251,14 @@ class MainWindow(QWidget, Ui_MainWindow):
         # DateAxisItem ne peut pas être défini dans Qt Designer
         self.plot.getPlotItem().setAxisItems({'bottom': pg.DateAxisItem()})
 
-        # curves dict
-        self.curves = {name: self.plot.plot(name=name) for name in CHANNEL_NAMES}
+        # curves dict — downsampling auto : pyqtgraph réduit les points au nombre
+        # de pixels disponibles, ce qui est essentiel avec 96 000 pts/courbe
+        self.curves = {}
+        for name in CHANNEL_NAMES:
+            curve = self.plot.plot(name=name)
+            curve.setDownsampling(auto=True, method='peak')
+            curve.setClipToView(True)
+            self.curves[name] = curve
 
         # checkboxes dict mappé depuis les widgets du .ui (cb_ch1, cb_ch2, cb_ch3)
         self.checkboxes = {name: getattr(self, f"cb_{name}") for name in CHANNEL_NAMES}
@@ -228,6 +288,11 @@ class MainWindow(QWidget, Ui_MainWindow):
         self.stop_event = mp.Event()
         self.process = None
         self.paused = False
+
+        # cap du log + horodatages de throttling
+        self.log.document().setMaximumBlockCount(LOG_MAX_LINES)
+        self._t_last_log  = 0.0
+        self._t_last_plot = 0.0
 
         # watcher thread : surveille la queue du process et émet data_ready
         self.watcher = DataWatcher(self.queue)
@@ -342,14 +407,32 @@ class MainWindow(QWidget, Ui_MainWindow):
     def on_data_ready(self, idx):
         """Slot connecté à DataWatcher.data_ready (thread GUI).
 
-        Reçoit l'index de l'échantillon nouvellement écrit en mémoire partagée,
-        le journalise, puis déclenche la mise à jour du graphe.
+        Le worker audio émet ~43 notifications/seconde (44100 / 1024). Ce slot
+        découple le taux d'acquisition du taux d'affichage via deux throttles
+        indépendants basés sur ``time.monotonic()`` :
+
+        - **Log** : limité à ``LOG_PERIOD`` s (~2 Hz) pour éviter que le
+          QTextEdit accapare le thread GUI avec des repaints à haute fréquence.
+        - **Plot** : limité à ``PLOT_PERIOD`` s (~30 Hz) pour un rendu fluide
+          sans saturer pyqtgraph.
+
+        Ignoré intégralement si ``_closed`` est levé (shared memory libérée).
 
         Args:
             idx: index courant du buffer (meta[0] dans la mémoire partagée).
         """
-        self.log_msg(idx)
-        self.update_ui_rolling()
+        if getattr(self, '_closed', False):
+            return
+
+        now = time.monotonic()
+
+        if now - self._t_last_log >= LOG_PERIOD:
+            self._t_last_log = now
+            self.log_msg(idx)
+
+        if now - self._t_last_plot >= PLOT_PERIOD:
+            self._t_last_plot = now
+            self.update_ui_rolling()
 
     def update_ui_rolling(self):
         """Met à jour les courbes pyqtgraph à partir de l'état courant du buffer.
@@ -471,11 +554,22 @@ class MainWindow(QWidget, Ui_MainWindow):
     def closeEvent(self, event):
         """Nettoyage ordonné à la fermeture de la fenêtre.
 
-        Ordre d'arrêt : thread DataWatcher → processus acq_worker → segments
-        de mémoire partagée. Les segments sont explicitement détruits (unlink)
-        pour éviter des fuites sur le système (les SharedMemory POSIX persistent
-        au-delà du processus Python si non unlinkés).
+        Ordre d'arrêt :
+        1. Lever ``_closed`` — court-circuite les slots qui accèdent à la
+           shared memory (signaux Qt encore en file d'attente).
+        2. Arrêter le thread DataWatcher — garantit qu'aucun nouveau signal
+           ``data_ready`` ne sera émis.
+        3. Terminer le processus acq_worker.
+        4. Libérer et détruire les segments SharedMemory.
+
+        La méthode est idempotente : un second appel (Qt peut la déclencher
+        deux fois) est ignoré via le flag ``_closed``.
         """
+        if getattr(self, '_closed', False):
+            event.accept()
+            return
+        self._closed = True
+
         self.watcher.stop()
         self.watcher_thread.quit()
         self.watcher_thread.wait()
@@ -485,10 +579,16 @@ class MainWindow(QWidget, Ui_MainWindow):
             self.process.join()
 
         self.shm_data.close()
-        self.shm_data.unlink()
+        try:
+            self.shm_data.unlink()
+        except FileNotFoundError:
+            pass
 
         self.shm_meta.close()
-        self.shm_meta.unlink()
+        try:
+            self.shm_meta.unlink()
+        except FileNotFoundError:
+            pass
 
         event.accept()
 

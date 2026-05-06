@@ -1,21 +1,33 @@
-"""Tests du worker d'acquisition (processus séparé + mémoire partagée)."""
+"""Tests du worker d'acquisition audio (processus séparé + mémoire partagée).
+
+Tous les tests injectent FakeInputStream via la fixture fake_stream_factory pour
+éviter tout accès matériel. Le patch est appliqué dans le processus parent
+avant le fork, donc le processus enfant hérite de la version patchée.
+"""
 import time
 import multiprocessing as mp
 import numpy as np
 import pytest
 
-from test_multi_process_pandas.main import acq_worker, BUFFER_SIZE, N_CHANNELS, SLEEP_LOOP
+from test_multi_process_pandas.main import (
+    acq_worker, BUFFER_SIZE, N_CHANNELS, CHUNK_SIZE, SAMPLE_RATE, SLEEP_LOOP,
+)
 
 
-def _start_worker(shm_pair):
-    """Démarre acq_worker et retourne (process, queue, pause_event, stop_event)."""
+def _start_worker(shm_pair, stream_factory=None):
+    """Démarre acq_worker et retourne (process, queue, pause_event, stop_event).
+
+    Args:
+        stream_factory: factory injectée dans acq_worker (FakeInputStream pour les tests).
+    """
     shm_data, shm_meta, _, _ = shm_pair
     queue       = mp.Queue()
     pause_event = mp.Event()
     stop_event  = mp.Event()
     p = mp.Process(
         target=acq_worker,
-        args=(shm_data.name, shm_meta.name, queue, pause_event, stop_event),
+        args=(shm_data.name, shm_meta.name, queue, pause_event, stop_event,
+              stream_factory),
     )
     p.start()
     return p, queue, pause_event, stop_event
@@ -29,105 +41,124 @@ def _wait_for_samples(meta, n, timeout=3.0):
 
 class TestAcqWorkerBasic:
 
-    def test_writes_at_least_one_sample(self, shm_pair):
-        """Le worker écrit au moins un échantillon en moins de 3 secondes."""
+    def test_writes_at_least_one_chunk(self, shm_pair, fake_stream_factory):
+        """Le worker écrit au moins un bloc (CHUNK_SIZE frames) en moins de 3 s."""
         _, _, _, meta = shm_pair
-        p, _, _, stop = _start_worker(shm_pair)
-        _wait_for_samples(meta, 1)
+        p, _, _, stop = _start_worker(shm_pair, fake_stream_factory)
+        _wait_for_samples(meta, CHUNK_SIZE)
         stop.set(); p.join(timeout=2)
 
-        assert int(meta[0]) >= 1
+        assert int(meta[0]) >= CHUNK_SIZE
 
-    def test_timestamp_is_recent(self, shm_pair):
-        """La colonne t contient des timestamps Unix contemporains."""
+    def test_timestamp_is_recent(self, shm_pair, fake_stream_factory):
+        """La colonne t contient des timestamps Unix contemporains.
+
+        Une marge d'un bloc (CHUNK_SIZE / SAMPLE_RATE ≈ 23 ms) est accordée
+        en début de fenêtre : les timestamps sont interpolés depuis t_end vers
+        le passé, donc la première frame d'un bloc peut être légèrement
+        antérieure au moment où le test a démarré.
+        """
         _, _, data, meta = shm_pair
         t_before = time.time()
-        p, _, _, stop = _start_worker(shm_pair)
-        _wait_for_samples(meta, 3)
-        t_after = time.time()
+        p, _, _, stop = _start_worker(shm_pair, fake_stream_factory)
+        _wait_for_samples(meta, CHUNK_SIZE * 2)
         stop.set(); p.join(timeout=2)
+        t_after = time.time()   # mesuré APRÈS la fin du processus
 
+        margin = CHUNK_SIZE / SAMPLE_RATE      # ≈ 23 ms
         n = min(int(meta[0]), BUFFER_SIZE)
-        for i in range(n):
-            assert t_before <= data[i, 0] <= t_after, (
-                f"timestamp data[{i},0]={data[i,0]:.3f} hors de [{t_before:.3f}, {t_after:.3f}]"
-            )
+        assert np.all(data[:n, 0] >= t_before - margin), \
+            "Des timestamps sont bien antérieurs au démarrage"
+        assert np.all(data[:n, 0] <= t_after), \
+            "Des timestamps sont postérieurs à l'arrêt"
 
-    def test_channel_values_are_bounded(self, shm_pair):
-        """Les valeurs sin/cos + bruit restent dans [-2, 2]."""
+    def test_channel_values_normalized(self, shm_pair, fake_stream_factory):
+        """Les valeurs audio (sin/cos synthétiques) restent dans [−1, 1]."""
         _, _, data, meta = shm_pair
-        p, _, _, stop = _start_worker(shm_pair)
-        _wait_for_samples(meta, 5)
+        p, _, _, stop = _start_worker(shm_pair, fake_stream_factory)
+        _wait_for_samples(meta, CHUNK_SIZE)
         stop.set(); p.join(timeout=2)
 
         n = min(int(meta[0]), BUFFER_SIZE)
-        assert np.all(np.abs(data[:n, 1:]) <= 2.0)
+        assert np.all(np.abs(data[:n, 1:3]) <= 1.0 + 1e-9)
 
-    def test_increments_meta_counter(self, shm_pair):
-        """meta[0] croît strictement au fil des échantillons."""
+    def test_ch3_is_difference(self, shm_pair, fake_stream_factory):
+        """ch3 = ch2 − ch1 pour chaque frame."""
+        _, _, data, meta = shm_pair
+        p, _, _, stop = _start_worker(shm_pair, fake_stream_factory)
+        _wait_for_samples(meta, CHUNK_SIZE)
+        stop.set(); p.join(timeout=2)
+
+        n = min(int(meta[0]), BUFFER_SIZE)
+        diff_expected = data[:n, 2] - data[:n, 1]
+        np.testing.assert_allclose(data[:n, 3], diff_expected, atol=1e-12)
+
+    def test_increments_meta_counter(self, shm_pair, fake_stream_factory):
+        """meta[0] croît par multiples de CHUNK_SIZE."""
         _, _, _, meta = shm_pair
-        p, _, _, stop = _start_worker(shm_pair)
-        _wait_for_samples(meta, 1)
+        p, _, _, stop = _start_worker(shm_pair, fake_stream_factory)
+        _wait_for_samples(meta, CHUNK_SIZE)
         idx1 = int(meta[0])
-        _wait_for_samples(meta, idx1 + 3)
+        _wait_for_samples(meta, idx1 + CHUNK_SIZE)
         idx2 = int(meta[0])
         stop.set(); p.join(timeout=2)
 
         assert idx2 > idx1
+        assert idx2 % CHUNK_SIZE == 0
 
 
 class TestAcqWorkerControl:
 
-    def test_stop_terminates_process(self, shm_pair):
+    def test_stop_terminates_process(self, shm_pair, fake_stream_factory):
         """Le processus se termine proprement après stop_event."""
         _, _, _, meta = shm_pair
-        p, _, _, stop = _start_worker(shm_pair)
-        _wait_for_samples(meta, 1)
+        p, _, _, stop = _start_worker(shm_pair, fake_stream_factory)
+        _wait_for_samples(meta, CHUNK_SIZE)
         stop.set()
         p.join(timeout=2)
 
         assert not p.is_alive()
 
-    def test_pause_freezes_counter(self, shm_pair):
+    def test_pause_freezes_counter(self, shm_pair, fake_stream_factory):
         """meta[0] ne progresse plus pendant la pause."""
         _, _, _, meta = shm_pair
-        p, _, pause, stop = _start_worker(shm_pair)
-        _wait_for_samples(meta, 2)
+        p, _, pause, stop = _start_worker(shm_pair, fake_stream_factory)
+        _wait_for_samples(meta, CHUNK_SIZE)
 
         pause.set()
-        time.sleep(SLEEP_LOOP * 3)     # ≥ 3 cycles de sleep du worker
+        time.sleep(SLEEP_LOOP * 4)
         idx_paused = int(meta[0])
         time.sleep(SLEEP_LOOP * 5)
         idx_after  = int(meta[0])
 
         stop.set(); p.join(timeout=2)
 
-        # Au pire 1 échantillon de plus (course entre pause et écriture)
-        assert idx_after <= idx_paused + 1
+        # Au pire un bloc de plus (course entre pause et lecture audio)
+        assert idx_after <= idx_paused + CHUNK_SIZE
 
-    def test_resume_after_pause(self, shm_pair):
+    def test_resume_after_pause(self, shm_pair, fake_stream_factory):
         """Après reprise, le compteur recommence à progresser."""
         _, _, _, meta = shm_pair
-        p, _, pause, stop = _start_worker(shm_pair)
-        _wait_for_samples(meta, 2)
+        p, _, pause, stop = _start_worker(shm_pair, fake_stream_factory)
+        _wait_for_samples(meta, CHUNK_SIZE)
 
         pause.set()
         time.sleep(SLEEP_LOOP * 3)
         idx_at_pause = int(meta[0])
         pause.clear()
-        _wait_for_samples(meta, idx_at_pause + 3, timeout=3.0)
+        _wait_for_samples(meta, idx_at_pause + CHUNK_SIZE, timeout=3.0)
 
         stop.set(); p.join(timeout=2)
 
         assert int(meta[0]) > idx_at_pause
 
-    def test_queue_receives_notifications(self, shm_pair):
-        """La queue reçoit des idx à chaque lot d'échantillons."""
+    def test_queue_receives_notifications(self, shm_pair, fake_stream_factory):
+        """La queue reçoit des idx après chaque bloc écrit."""
         _, _, _, meta = shm_pair
-        p, queue, _, stop = _start_worker(shm_pair)
-        _wait_for_samples(meta, 5)
+        p, queue, _, stop = _start_worker(shm_pair, fake_stream_factory)
+        _wait_for_samples(meta, CHUNK_SIZE * 2)
         stop.set(); p.join(timeout=2)
 
         assert not queue.empty()
         idx = queue.get_nowait()
-        assert isinstance(idx, int) and idx >= 1
+        assert isinstance(idx, int) and idx >= CHUNK_SIZE
