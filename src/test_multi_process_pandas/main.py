@@ -39,7 +39,7 @@ CHUNK_SIZE = 1024
 #: Taille du buffer circulaire en frames — correspond à SAMPLE_RATE * 2 secondes d'audio.
 BUFFER_SIZE = SAMPLE_RATE * 2
 
-#: Noms des canaux : ch1 = gauche, ch2 = droite, ch3 = différence (ch2 − ch1).
+#: Noms des canaux — ch1 gauche, ch2 droite, ch3 différence ch2 moins ch1.
 #: Chaque entrée correspond à une colonne de données et à une checkbox dans l'interface.
 CHANNEL_NAMES = ["ch1", "ch2", "ch3"]
 
@@ -554,7 +554,8 @@ class MainWindow(QWidget, Ui_MainWindow):
     def closeEvent(self, event):
         """Nettoyage ordonné à la fermeture de la fenêtre.
 
-        Ordre d'arrêt :
+        Ordre d'arrêt (chaque étape dépend de la précédente) :
+
         1. Lever ``_closed`` — court-circuite les slots qui accèdent à la
            shared memory (signaux Qt encore en file d'attente).
         2. Arrêter le thread DataWatcher — garantit qu'aucun nouveau signal

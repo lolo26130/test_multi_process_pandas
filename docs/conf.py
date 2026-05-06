@@ -67,6 +67,7 @@ nitpick_ignore = [
     ("py:class", "PyQt6.QtWidgets.QWidget"),
     ("py:class", "pyqtgraph.PlotDataItem"),
     ("py:func",  "numpy.ndarray"),          # ndarray est une classe, pas une fonction
+    ("py:class", "test_multi_process_pandas.views.ui_main.Ui_MainWindow"),  # généré
 ]
 
 # ---------------------------------------------------------------------------
