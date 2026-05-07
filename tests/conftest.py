@@ -1,10 +1,15 @@
 import os
 import numpy as np
 import pytest
+import pyqtgraph as pg
 from multiprocessing import shared_memory
 
 # Qt headless pour les tests sans display
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+# QOpenGLWidget non disponible en mode offscreen — on force le renderer logiciel
+# pour tous les tests, indépendamment du réglage de production (useOpenGL=True).
+pg.setConfigOptions(useOpenGL=False)
 
 
 class FakeInputStream:

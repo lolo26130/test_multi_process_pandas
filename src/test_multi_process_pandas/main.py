@@ -62,7 +62,7 @@ LOG_PERIOD = 0.5
 LOG_MAX_LINES = 200
 
 
-pg.setConfigOptions(useOpenGL=False)  # OpenGL désactivé : QOpenGLWidget non supporté sur ce système
+pg.setConfigOptions(useOpenGL=True)  # AMD Radeon 780M — OpenGL 4.6 direct rendering via QOpenGLWidget
 
 # Ordre de préférence des émulateurs de terminal disponibles sur le système.
 # Chaque entrée est la liste d'arguments précédant la commande à exécuter.
