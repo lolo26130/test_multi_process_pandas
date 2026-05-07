@@ -9,7 +9,7 @@ import pandas as pd
 
 from pathlib import Path
 from multiprocessing import shared_memory
-from PyQt6.QtWidgets import QApplication, QWidget
+from PyQt6.QtWidgets import QApplication, QCheckBox, QWidget
 from PyQt6.QtCore import QThread, QObject, pyqtSignal, pyqtSlot
 from PyQt6 import uic
 
@@ -40,11 +40,11 @@ SAMPLE_RATE = 48000
 CHUNK_SIZE = 1024
 
 #: Taille du buffer circulaire en frames — correspond à SAMPLE_RATE * 2 secondes d'audio.
-BUFFER_SIZE = SAMPLE_RATE * 2
+BUFFER_SIZE = SAMPLE_RATE //2
 
 #: Noms des canaux — ch1 gauche, ch2 droite, ch3 différence ch2 moins ch1.
 #: Chaque entrée correspond à une colonne de données et à une checkbox dans l'interface.
-CHANNEL_NAMES = ["ch1", "ch2", "ch3"]
+CHANNEL_NAMES = ["ch1", "ch2", "différence"]
 
 COLS = ["t"] + CHANNEL_NAMES
 N_CHANNELS = len(CHANNEL_NAMES)
@@ -335,9 +335,17 @@ class MainWindow(QWidget, Ui_MainWindow):
             curve.setClipToView(True)
             self.curves[name] = curve
 
-        # checkboxes dict mappé depuis les widgets du .ui (cb_ch1, cb_ch2, cb_ch3)
-        self.checkboxes = {name: getattr(self, f"cb_{name}") for name in CHANNEL_NAMES}
-        for cb in self.checkboxes.values():
+        # checkboxes dict : objectNames stables cb_0/1/2... en Qt Designer,
+        # labels et clés du dict fournis par CHANNEL_NAMES.
+        # Changer CHANNEL_NAMES suffit — pas besoin de toucher au .ui.
+        sorted_cbs = sorted(
+            self.cb_container.findChildren(QCheckBox),
+            key=lambda cb: int(cb.objectName().removeprefix("cb_")),
+        )
+        self.checkboxes = {}
+        for name, cb in zip(CHANNEL_NAMES, sorted_cbs):
+            cb.setText(name)
+            self.checkboxes[name] = cb
             cb.stateChanged.connect(self.update_visibility)
 
         # radio boutons de mode d'affichage
@@ -481,20 +489,6 @@ class MainWindow(QWidget, Ui_MainWindow):
             self.process.terminate()
             self.process.join()
 
-    # def get_ordered_df(self):
-    #     idx = int(self.meta[0])
-    #     if idx == 0:
-    #         return None
-
-    #     pos = idx % BUFFER_SIZE
-
-    #     if idx < BUFFER_SIZE:
-    #         arr = self.data[:idx]
-    #     else:
-    #         arr = np.vstack((self.data[pos:], self.data[:pos]))
-
-    #     return pd.DataFrame(arr, columns=COLS)
-
     def update_visibility(self):
         """Affiche ou masque chaque courbe selon l'état de sa checkbox associée."""
         for name, cb in self.checkboxes.items():
@@ -610,90 +604,6 @@ class MainWindow(QWidget, Ui_MainWindow):
             t_ds, y_ds = _downsample_peak(y, max_pts, t)
             self.curves[name].setData(t_ds, y_ds)
 
-    # def update_ui(self):
-    #     while not self.queue.empty():
-    #         self.log_msg(self.queue.get())
-
-    #     df = self.get_ordered_df()
-    #     if df is None:
-    #         return
-
-    #     t = df["t"] - df["t"].min()
-
-    #     for name in CHANNEL_NAMES:
-    #         if self.checkboxes[name].isChecked():
-    #             self.curves[name].setData(t, df[name])
-
-    # def update_ui_rolling(self):
-    #     while not self.queue.empty():
-    #         self.log_msg(self.queue.get())
-
-    #     df = self.get_ordered_df()
-    #     if df is None or df.empty:
-    #         return
-
-    #     t = df["t"]
-    #     t0 = t.max()
-    #     t_rel = t - t0
-
-    #     # rolling window filter
-    #     mask = t_rel >= -WINDOW_SEC
-    #     dfw = df[mask]
-
-    #     t_plot = dfw["t"] - dfw["t"].min()
-
-    #     for name in CHANNEL_NAMES:
-    #         if self.checkboxes[name].isChecked():
-    #             self.curves[name].setData(t_plot, dfw[name])   # TODO ? plante 
-
-    # def update_ui_downsampling(self):    # TODO to test ....
-    #     while not self.queue.empty():
-    #         self.log_msg(self.queue.get())
-
-    #     df = self.get_ordered_df()
-    #     if df is None or df.empty:
-    #         return
-
-    #     t = df["t"]
-    #     t0 = t.max()
-    #     t_rel = t - t0
-
-    #     # rolling window
-    #     mask = t_rel >= -WINDOW_SEC
-    #     dfw = df[mask]
-
-    #     if dfw.empty:
-    #         return
-
-    #     # downsampling
-    #     n = len(dfw)
-    #     if n > MAX_POINTS:
-    #         step = max(1, n // MAX_POINTS)
-    #         dfw = dfw.iloc[::step]
-
-    #     t_plot = dfw["t"] - dfw["t"].min()
-
-    #     for name in CHANNEL_NAMES:
-    #         if self.checkboxes[name].isChecked():
-    #             self.curves[name].setData(t_plot, dfw[name])
-
-
-
-
-    #     # t_plot = (dfw["t"] - dfw["t"].min()).to_numpy()  # TODO test ????: min max enveloppe 
-
-    #     # for name in CHANNEL_NAMES:
-    #     #     if not self.checkboxes[name].isChecked():
-    #     #         continue
-
-    #     #     y = dfw[name].to_numpy()
-
-    #     #     x_ds, y_ds = downsample_minmax(t_plot, y, MAX_POINTS)
-
-    #     #     self.curves[name].setData(x_ds, y_ds)
-
-
-
     def closeEvent(self, event):
         """Nettoyage ordonné à la fermeture de la fenêtre.
 
@@ -754,8 +664,6 @@ def main():
 
 
 if __name__ == "__main__":
-    # import multiprocessing as mp
-    # import sys
 
     mp.freeze_support()
 
@@ -765,19 +673,4 @@ if __name__ == "__main__":
         mp.set_start_method("spawn", force=True)
 
     main()
-
-# def main():
-#     mp.set_start_method("spawn")
-
-#     app = QApplication(sys.argv)
-#     win = MainWindow()
-#     win.resize(900, 600)
-#     win.show()
-#     sys.exit(app.exec())
-    
-    
-# if __name__ == "__main__":
-#     mp.freeze_support()
-#     main()
-
 

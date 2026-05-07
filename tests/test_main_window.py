@@ -118,10 +118,12 @@ class TestUIState:
         assert win.curves["ch1"].isVisible()
 
     def test_other_curves_unaffected(self, win, qtbot):
-        """Masquer ch1 ne touche pas ch2 et ch3."""
-        win.checkboxes["ch1"].setChecked(False)
-        assert win.curves["ch2"].isVisible()
-        assert win.curves["ch3"].isVisible()
+        """Masquer le premier canal ne touche pas les autres."""
+        first = CHANNEL_NAMES[0]
+        others = CHANNEL_NAMES[1:]
+        win.checkboxes[first].setChecked(False)
+        for name in others:
+            assert win.curves[name].isVisible(), f"courbe '{name}' masquée à tort"
 
     def test_on_btn_pause_clicked_sets_event(self, win):
         assert not win.pause_event.is_set()
