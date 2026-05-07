@@ -61,8 +61,7 @@ LOG_PERIOD = 0.5
 #: Nombre maximum de lignes conservées dans le log.
 LOG_MAX_LINES = 200
 
-
-pg.setConfigOptions(useOpenGL=True)  # AMD Radeon 780M — OpenGL 4.6 direct rendering via QOpenGLWidget
+pg.setConfigOptions(useOpenGL=False)  # OpenGL désactivé : transfert CPU→GPU trop coûteux pour des polylignes 2D à 96k pts/30 Hz
 
 # Ordre de préférence des émulateurs de terminal disponibles sur le système.
 # Chaque entrée est la liste d'arguments précédant la commande à exécuter.
