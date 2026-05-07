@@ -51,26 +51,47 @@ class TestAcqWorkerBasic:
         assert int(meta[0]) >= CHUNK_SIZE
 
     def test_timestamp_is_recent(self, shm_pair, fake_stream_factory):
-        """La colonne t contient des timestamps Unix contemporains.
+        """Les timestamps sont ancrés au démarrage du stream (t0 ≈ t_before).
 
-        Une marge d'un bloc (CHUNK_SIZE / SAMPLE_RATE ≈ 23 ms) est accordée
-        en début de fenêtre : les timestamps sont interpolés depuis t_end vers
-        le passé, donc la première frame d'un bloc peut être légèrement
-        antérieure au moment où le test a démarré.
+        Seule la borne inférieure est vérifiable avec FakeInputStream : comme la
+        stream ne bloque pas, frame_count peut traverser de nombreuses révolutions
+        avant que stop_event soit traité, rendant toute borne supérieure invalide.
         """
         _, _, data, meta = shm_pair
         t_before = time.time()
         p, _, _, stop = _start_worker(shm_pair, fake_stream_factory)
         _wait_for_samples(meta, CHUNK_SIZE * 2)
         stop.set(); p.join(timeout=2)
-        t_after = time.time()   # mesuré APRÈS la fin du processus
 
-        margin = CHUNK_SIZE / SAMPLE_RATE      # ≈ 23 ms
+        margin = CHUNK_SIZE / SAMPLE_RATE      # ≈ 21 ms
         n = min(int(meta[0]), BUFFER_SIZE)
         assert np.all(data[:n, 0] >= t_before - margin), \
-            "Des timestamps sont bien antérieurs au démarrage"
-        assert np.all(data[:n, 0] <= t_after), \
-            "Des timestamps sont postérieurs à l'arrêt"
+            "Des timestamps sont antérieurs au démarrage du stream"
+
+    def test_timestamps_are_continuous(self, shm_pair, fake_stream_factory):
+        """Les timestamps sont espacés exactement de 1/SAMPLE_RATE sans discontinuité.
+
+        Avec le calcul par compteur (t0 + frame_count/SAMPLE_RATE), chaque pas
+        entre deux frames consécutives (dans l'ordre physique du buffer) vaut
+        1/SAMPLE_RATE, sauf au point de wrap-around du buffer circulaire où un
+        saut négatif est attendu (au plus un seul).
+        """
+        _, _, data, meta = shm_pair
+        p, _, _, stop = _start_worker(shm_pair, fake_stream_factory)
+        _wait_for_samples(meta, BUFFER_SIZE + CHUNK_SIZE)   # au moins un wrap
+        stop.set(); p.join(timeout=2)
+
+        n = min(int(meta[0]), BUFFER_SIZE)
+        diffs = np.diff(data[:n, 0])
+        expected_step = 1.0 / SAMPLE_RATE
+
+        positive_diffs = diffs[diffs > 0]
+        np.testing.assert_allclose(
+            positive_diffs, expected_step, atol=1e-6,
+            err_msg="Espacement entre timestamps invalide (gap inter-chunk détecté)"
+        )
+        assert np.sum(diffs < 0) <= 1, \
+            "Plus d'un saut négatif détecté dans le buffer (wrap-around inattendu)"
 
     def test_channel_values_normalized(self, shm_pair, fake_stream_factory):
         """Les valeurs audio (sin/cos synthétiques) restent dans [−1, 1]."""

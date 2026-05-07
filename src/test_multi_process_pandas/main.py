@@ -159,6 +159,14 @@ def acq_worker(data_name, meta_name, queue, pause_event, stop_event,
     idx = 0
 
     with _stream_factory() as stream:
+        # t0 fixé une seule fois à l'ouverture du stream.
+        # Les timestamps sont ensuite calculés par comptage d'échantillons :
+        # t = t0 + frame_count / SAMPLE_RATE
+        # Cela garantit une continuité parfaite entre chunks, sans jitter dû
+        # aux variations de scheduling OS que time.time() introduisait.
+        t0 = time.time()
+        frame_count = 0
+
         while not stop_event.is_set():
             if pause_event.is_set():
                 time.sleep(SLEEP_LOOP)
@@ -167,10 +175,9 @@ def acq_worker(data_name, meta_name, queue, pause_event, stop_event,
             audio, _ = stream.read(CHUNK_SIZE)   # shape : (CHUNK_SIZE, 2), float32
             n = len(audio)
 
-            # Timestamps interpolés sur le bloc
-            t_end    = time.time()
-            t_start  = t_end - n / SAMPLE_RATE
-            timestamps = t_start + np.arange(n) / SAMPLE_RATE
+            # Timestamps continus basés sur le compteur d'échantillons
+            timestamps = t0 + (frame_count + np.arange(n)) / SAMPLE_RATE
+            frame_count += n
 
             # Cast float32 → float64 (format du buffer shared memory)
             left  = audio[:, 0].astype(np.float64)
