@@ -81,6 +81,53 @@ def _find_terminal() -> "list[str] | None":
             return args
     return None
 
+
+def _downsample_peak(y: np.ndarray, max_pts: int,
+                     t: "np.ndarray | None" = None):
+    """Pré-downsampling min-max (enveloppe) entièrement vectorisé.
+
+    Divise les n points en ``max_pts // 2`` buckets et conserve, pour chaque
+    bucket, l'indice du minimum et l'indice du maximum dans l'ordre
+    chronologique. Produit au plus ``max_pts`` points en sortie, ce qui
+    préserve l'enveloppe visuelle quelle que soit la fréquence de zoom.
+
+    Appelé avant ``setData`` pour limiter le travail de pyqtgraph à ~2×
+    la largeur du widget en pixels (typiquement 1 800 pts au lieu de 96 000).
+
+    Args:
+        y:        signal 1-D float64.
+        max_pts:  nombre maximum de points en sortie (arrondi au pair inférieur).
+        t:        tableau x 1-D optionnel (même longueur que y).
+                  Si fourni → retourne ``(t_ds, y_ds)``, sinon → ``y_ds``.
+    """
+    n = len(y)
+    if n <= max_pts:
+        return (t, y) if t is not None else y
+
+    n_buckets   = max(1, max_pts // 2)
+    bucket_size = n // n_buckets
+    n_trim      = n_buckets * bucket_size
+
+    y_b   = y[:n_trim].reshape(n_buckets, bucket_size)
+    i_min = y_b.argmin(axis=1)
+    i_max = y_b.argmax(axis=1)
+
+    base   = np.arange(n_buckets) * bucket_size
+    gi_min = base + i_min
+    gi_max = base + i_max
+
+    # Interleave min/max dans l'ordre chronologique à l'intérieur de chaque bucket
+    earlier = np.where(i_min <= i_max, gi_min, gi_max)
+    later   = np.where(i_min <= i_max, gi_max, gi_min)
+
+    out_idx          = np.empty(n_buckets * 2, dtype=np.intp)
+    out_idx[0::2]    = earlier
+    out_idx[1::2]    = later
+
+    if t is not None:
+        return t[out_idx], y[out_idx]
+    return y[out_idx]
+
 # def downsample_minmax(x, y, max_points):
 #     n = len(x)
 #     if n <= max_points:
@@ -278,12 +325,13 @@ class MainWindow(QWidget, Ui_MainWindow):
         # DateAxisItem ne peut pas être défini dans Qt Designer
         self.plot.getPlotItem().setAxisItems({'bottom': pg.DateAxisItem()})
 
-        # curves dict — downsampling auto : pyqtgraph réduit les points au nombre
-        # de pixels disponibles, ce qui est essentiel avec 96 000 pts/courbe
+        # curves dict — downsampling désactivé côté pyqtgraph : _downsample_peak
+        # pré-réduit les données à ~2× la largeur du widget avant setData,
+        # ce qui est plus efficace que laisser pyqtgraph le faire en interne.
         self.curves = {}
         for name in CHANNEL_NAMES:
             curve = self.plot.plot(name=name)
-            curve.setDownsampling(auto=True, method='peak')
+            curve.setDownsampling(auto=False)
             curve.setClipToView(True)
             self.curves[name] = curve
 
@@ -515,57 +563,52 @@ class MainWindow(QWidget, Ui_MainWindow):
                 self.update_ui()
 
     def update_ui(self):
-        """Affichage direct du buffer — mode économique, zéro copie, zéro allocation.
+        """Affichage direct du buffer avec pré-downsampling min-max.
 
-        Lit ``self.data[:n, col]`` comme vue numpy brute sans passer par pandas,
-        sans concaténation et sans réordonnancement chronologique.
-        L'axe X est l'indice d'échantillon (implicite dans pyqtgraph).
-
-        Quand le buffer est plein (idx ≥ BUFFER_SIZE), les données sont affichées
-        dans l'ordre physique du buffer : un saut visuel peut apparaître au point
-        de wrap-around, ce qui est le compromis accepté pour économiser le CPU.
+        Lit self.data[:n, col] en vue numpy zero-copy, pré-downsampling à
+        ~2× la largeur du widget, puis setData(y_ds) sans axe x explicite.
         """
         idx = int(self.meta[0])
         if idx == 0:
             return
-        n = min(idx, BUFFER_SIZE)
+        n       = min(idx, BUFFER_SIZE)
+        max_pts = max(200, self.plot.width() * 2)
         for i, name in enumerate(CHANNEL_NAMES):
             if not self.checkboxes[name].isChecked():
                 continue
-            self.curves[name].setData(self.data[:n, i + 1])
+            y_ds = _downsample_peak(self.data[:n, i + 1], max_pts)
+            self.curves[name].setData(y_ds)
 
     def update_ui_rolling(self):
-        """Met à jour les courbes pyqtgraph à partir de l'état courant du buffer.
+        """Affichage rolling avec pré-downsampling min-max.
 
-        Lit les vues zero-copy via get_views() et concatène les segments numpy
-        (np.concatenate) sans copie lourde pour reconstruire l'axe temporel
-        continu. Seules les courbes dont la checkbox est cochée sont rafraîchies.
+        Reconstruit l'ordre chronologique via get_views(), concatène les deux
+        segments numpy, pré-downsampling à ~2× la largeur du widget, puis
+        setData(t_ds, y_ds). Un seul calcul de max_pts par appel pour tous
+        les canaux.
         """
         views = self.get_views()
         if views is None:
             return
 
-        v1, v2 = views
+        v1, v2   = views
+        max_pts  = max(200, self.plot.width() * 2)
 
         for name in CHANNEL_NAMES:
             if not self.checkboxes[name].isChecked():
                 continue
 
             if v1 is not None and v2 is not None:
-                # concat logique sans copie lourde
                 t = np.concatenate((v1["t"].values, v2["t"].values))
                 y = np.concatenate((v1[name].values, v2[name].values))
-                self.curves[name].setData(t, y)
-            if v2 is None and v1 is not None:
+            elif v1 is not None:
                 t = v1["t"].values
                 y = v1[name].values
-                self.curves[name].setData(t, y)
-            if v2 is not None and v1 is None:
-                t = v1["t"].values
-                y = v1[name].values
-                self.curves[name].setData(t, y)
-            if v2 is None and v1 is None:
-                pass
+            else:
+                continue
+
+            t_ds, y_ds = _downsample_peak(y, max_pts, t)
+            self.curves[name].setData(t_ds, y_ds)
 
     # def update_ui(self):
     #     while not self.queue.empty():
