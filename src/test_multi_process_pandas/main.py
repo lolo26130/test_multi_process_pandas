@@ -128,34 +128,6 @@ def _downsample_peak(y: np.ndarray, max_pts: int,
         return t[out_idx], y[out_idx]
     return y[out_idx]
 
-# def downsample_minmax(x, y, max_points):
-#     n = len(x)
-#     if n <= max_points:
-#         return x, y
-
-#     bucket_size = n // max_points
-
-#     x_out = []
-#     y_out = []
-
-#     for i in range(0, n, bucket_size):
-#         xs = x[i:i + bucket_size]
-#         ys = y[i:i + bucket_size]
-
-#         if len(xs) == 0:
-#             continue
-
-#         ymin = ys.min()
-#         ymax = ys.max()
-
-#         xmin = xs[ys.argmin()]
-#         xmax = xs[ys.argmax()]
-
-#         x_out.extend([xmin, xmax])
-#         y_out.extend([ymin, ymax])
-
-#     return np.array(x_out), np.array(y_out)
-
 def acq_worker(data_name, meta_name, queue, pause_event, stop_event,
                _stream_factory=None):
     """Worker d'acquisition audio exécuté dans un processus séparé (multiprocessing).
