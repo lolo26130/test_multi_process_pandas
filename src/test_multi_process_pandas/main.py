@@ -329,18 +329,25 @@ class MainWindow(QWidget, Ui_MainWindow):
 
     @pyqtSlot(bool)
     def _on_display_mode_changed(self, direct: bool) -> None:
-        """Bascule l'axe X et remet les courbes à zéro lors du changement de mode.
+        """Bascule l'axe X et recadre la vue lors du changement de mode.
 
-        En mode Direct l'axe est un AxisItem standard (indices entiers).
-        En mode Rolling il est remplacé par DateAxisItem (timestamps Unix).
-        Les courbes sont vidées pour éviter que l'ancienne plage X bloque la vue.
+        setClipToView(True) sur les courbes élimine les points hors de la vue
+        courante au moment de setData(). Il faut donc fixer le xRange correct
+        AVANT d'appeler update_ui_*/update_ui(), sinon clipToView clip tout
+        et enableAutoRange() n'a plus rien à recadrer.
         """
-        if direct:
-            self.plot.getPlotItem().setAxisItems({'bottom': pg.AxisItem('bottom')})
-        else:
-            self.plot.getPlotItem().setAxisItems({'bottom': pg.DateAxisItem()})
         for curve in self.curves.values():
             curve.setData([], [])
+        if direct:
+            self.plot.getPlotItem().setAxisItems({'bottom': pg.AxisItem('bottom')})
+            n = max(1, min(int(self.meta[0]), BUFFER_SIZE))
+            self.plot.setXRange(0, n, padding=0.05)
+            self.update_ui()
+        else:
+            self.plot.getPlotItem().setAxisItems({'bottom': pg.DateAxisItem()})
+            now = time.time()
+            self.plot.setXRange(now - 2.0, now, padding=0.05)
+            self.update_ui_rolling()
         self.plot.enableAutoRange()
 
     def _launch_monitor(self) -> None:
