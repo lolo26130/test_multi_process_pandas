@@ -12,7 +12,8 @@ import time
 import plotext as plt
 import psutil
 
-HISTORY_LEN = 60  # un point ≈ 1 s → 60 s d'historique
+HISTORY_LEN = 60   # un point ≈ 1 s → 60 s d'historique
+_HEADER_LINES = 10  # lignes imprimées par _print_header (sep+titre+sep + 6 données + sep)
 
 
 def _get_proc(pid: int) -> "psutil.Process | None":
@@ -98,11 +99,15 @@ def main() -> None:
             hist_mem_c.append(ic["mem_mb"]); hist_mem_c.pop(0)
             hist_mem_p.append(ip["mem_mb"]); hist_mem_p.pop(0)
 
+            w, h = shutil.get_terminal_size((80, 24))
+            available_h = max(10, h - _HEADER_LINES)
+
             plt.clf()
             plt.clt()
 
             _print_header(args.child_pid, args.parent_pid, ic, ip)
 
+            plt.plotsize(w, available_h)
             plt.subplots(2, 1)
 
             plt.subplot(1, 1)
