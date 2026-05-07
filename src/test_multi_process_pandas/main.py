@@ -40,7 +40,7 @@ SAMPLE_RATE = 48000
 CHUNK_SIZE = 1024
 
 #: Taille du buffer circulaire en frames — correspond à SAMPLE_RATE * 2 secondes d'audio.
-BUFFER_SIZE = SAMPLE_RATE //2
+BUFFER_SIZE = SAMPLE_RATE * 2
 
 #: Noms des canaux — ch1 gauche, ch2 droite, ch3 différence ch2 moins ch1.
 #: Chaque entrée correspond à une colonne de données et à une checkbox dans l'interface.
@@ -256,6 +256,7 @@ class DataWatcher(QObject):
         self._queue = mp_queue
         self._running = True
 
+    @pyqtSlot()
     def run(self):
         """Boucle de surveillance, à connecter à QThread.started.
 
@@ -597,6 +598,11 @@ class MainWindow(QWidget, Ui_MainWindow):
         self._closed = True
 
         self._stop_monitor()
+
+        # Déconnexion explicite avant l'arrêt du thread : évite que Qt tente
+        # de déconnecter ces signaux pendant la destruction (nullptr warning).
+        self.watcher.data_ready.disconnect(self.on_data_ready)
+        self.watcher_thread.started.disconnect(self.watcher.run)
 
         self.watcher.stop()
         self.watcher_thread.quit()
