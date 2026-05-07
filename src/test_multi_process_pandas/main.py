@@ -477,7 +477,30 @@ class MainWindow(QWidget, Ui_MainWindow):
 
         if now - self._t_last_plot >= PLOT_PERIOD:
             self._t_last_plot = now
-            self.update_ui_rolling()
+            if self.rb_rolling.isChecked():
+                self.update_ui_rolling()
+            else:
+                self.update_ui()
+
+    def update_ui(self):
+        """Affichage direct du buffer — mode économique, zéro copie, zéro allocation.
+
+        Lit ``self.data[:n, col]`` comme vue numpy brute sans passer par pandas,
+        sans concaténation et sans réordonnancement chronologique.
+        L'axe X est l'indice d'échantillon (implicite dans pyqtgraph).
+
+        Quand le buffer est plein (idx ≥ BUFFER_SIZE), les données sont affichées
+        dans l'ordre physique du buffer : un saut visuel peut apparaître au point
+        de wrap-around, ce qui est le compromis accepté pour économiser le CPU.
+        """
+        idx = int(self.meta[0])
+        if idx == 0:
+            return
+        n = min(idx, BUFFER_SIZE)
+        for i, name in enumerate(CHANNEL_NAMES):
+            if not self.checkboxes[name].isChecked():
+                continue
+            self.curves[name].setData(self.data[:n, i + 1])
 
     def update_ui_rolling(self):
         """Met à jour les courbes pyqtgraph à partir de l'état courant du buffer.

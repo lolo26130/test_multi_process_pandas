@@ -69,6 +69,23 @@
        </property>
       </spacer>
      </item>
+     <item>
+      <widget class="QRadioButton" name="rb_rolling">
+       <property name="text">
+        <string>Rolling</string>
+       </property>
+       <property name="checked">
+        <bool>true</bool>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QRadioButton" name="rb_direct">
+       <property name="text">
+        <string>Direct</string>
+       </property>
+      </widget>
+     </item>
     </layout>
    </item>
    <item>
