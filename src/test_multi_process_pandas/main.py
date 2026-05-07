@@ -1,3 +1,6 @@
+import os
+import shutil
+import subprocess
 import sys
 import time
 import multiprocessing as mp
@@ -60,6 +63,24 @@ LOG_MAX_LINES = 200
 
 
 pg.setConfigOptions(useOpenGL=False)  # OpenGL désactivé : QOpenGLWidget non supporté sur ce système
+
+# Ordre de préférence des émulateurs de terminal disponibles sur le système.
+# Chaque entrée est la liste d'arguments précédant la commande à exécuter.
+_TERMINAL_CANDIDATES = [
+    ["konsole", "-e"],
+    ["xterm", "-e"],
+    ["gnome-terminal", "--"],
+    ["alacritty", "-e"],
+    ["kitty"],
+]
+
+
+def _find_terminal() -> "list[str] | None":
+    """Retourne les arguments de lancement du premier terminal trouvé dans PATH."""
+    for args in _TERMINAL_CANDIDATES:
+        if shutil.which(args[0]):
+            return args
+    return None
 
 # def downsample_minmax(x, y, max_points):
 #     n = len(x)
@@ -288,6 +309,7 @@ class MainWindow(QWidget, Ui_MainWindow):
         self.stop_event = mp.Event()
         self.process = None
         self.paused = False
+        self.monitor_proc = None  # processus terminal hébergeant process_monitor
 
         # cap du log + horodatages de throttling
         self.log.document().setMaximumBlockCount(LOG_MAX_LINES)
@@ -301,6 +323,27 @@ class MainWindow(QWidget, Ui_MainWindow):
         self.watcher_thread.started.connect(self.watcher.run)
         self.watcher.data_ready.connect(self.on_data_ready)
         self.watcher_thread.start()
+
+    def _launch_monitor(self) -> None:
+        """Ouvre un terminal avec process_monitor pour acq_worker et ce processus."""
+        if self.process is None or not self.process.is_alive():
+            return
+        term = _find_terminal()
+        if term is None:
+            self.log_msg("[monitor] Aucun terminal disponible (konsole, xterm…).")
+            return
+        cmd = term + [
+            sys.executable, "-m", "test_multi_process_pandas.process_monitor",
+            "--child-pid",  str(self.process.pid),
+            "--parent-pid", str(os.getpid()),
+        ]
+        self.monitor_proc = subprocess.Popen(cmd)
+
+    def _stop_monitor(self) -> None:
+        """Termine le terminal de monitoring s'il tourne encore."""
+        if self.monitor_proc and self.monitor_proc.poll() is None:
+            self.monitor_proc.terminate()
+        self.monitor_proc = None
 
     def log_msg(self, msg):
         """Ajoute une ligne dans le QTextEdit de log."""
@@ -330,6 +373,7 @@ class MainWindow(QWidget, Ui_MainWindow):
             ),
         )
         self.process.start()
+        self._launch_monitor()
 
     @pyqtSlot()
     def on_btn_pause_clicked(self):
@@ -352,6 +396,7 @@ class MainWindow(QWidget, Ui_MainWindow):
     @pyqtSlot()
     def on_btn_kill_clicked(self):
         """Arrêt forcé : envoie SIGTERM au processus et attend sa terminaison."""
+        self._stop_monitor()
         if self.process and self.process.is_alive():
             self.process.terminate()
             self.process.join()
@@ -570,6 +615,8 @@ class MainWindow(QWidget, Ui_MainWindow):
             event.accept()
             return
         self._closed = True
+
+        self._stop_monitor()
 
         self.watcher.stop()
         self.watcher_thread.quit()
