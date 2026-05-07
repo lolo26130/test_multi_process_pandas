@@ -286,6 +286,9 @@ class MainWindow(QWidget, Ui_MainWindow):
         for cb in self.checkboxes.values():
             cb.stateChanged.connect(self.update_visibility)
 
+        # radio boutons de mode d'affichage
+        self.rb_direct.toggled.connect(self._on_display_mode_changed)
+
         # shared memory
         self.shm_data = shared_memory.SharedMemory(
             create=True,
@@ -323,6 +326,22 @@ class MainWindow(QWidget, Ui_MainWindow):
         self.watcher_thread.started.connect(self.watcher.run)
         self.watcher.data_ready.connect(self.on_data_ready)
         self.watcher_thread.start()
+
+    @pyqtSlot(bool)
+    def _on_display_mode_changed(self, direct: bool) -> None:
+        """Bascule l'axe X et remet les courbes à zéro lors du changement de mode.
+
+        En mode Direct l'axe est un AxisItem standard (indices entiers).
+        En mode Rolling il est remplacé par DateAxisItem (timestamps Unix).
+        Les courbes sont vidées pour éviter que l'ancienne plage X bloque la vue.
+        """
+        if direct:
+            self.plot.getPlotItem().setAxisItems({'bottom': pg.AxisItem('bottom')})
+        else:
+            self.plot.getPlotItem().setAxisItems({'bottom': pg.DateAxisItem()})
+        for curve in self.curves.values():
+            curve.setData([], [])
+        self.plot.enableAutoRange()
 
     def _launch_monitor(self) -> None:
         """Ouvre un terminal avec process_monitor pour acq_worker et ce processus."""
