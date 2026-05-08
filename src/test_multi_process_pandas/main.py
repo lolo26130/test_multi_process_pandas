@@ -10,7 +10,8 @@ import pandas as pd
 from pathlib import Path
 from multiprocessing import shared_memory
 from PyQt6.QtWidgets import QApplication, QCheckBox, QWidget
-from PyQt6.QtCore import QThread, QObject, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import pyqtSlot
+from PyQt6.QtDBus import QDBusConnection
 from PyQt6 import uic
 
 import pyqtgraph as pg
@@ -48,6 +49,14 @@ CHANNEL_NAMES = ["ch1", "ch2", "différence"]
 
 COLS = ["t"] + CHANNEL_NAMES
 N_CHANNELS = len(CHANNEL_NAMES)
+
+# Identifiants D-Bus du signal émis par acq_worker.
+# path  = chemin de l'objet D-Bus (convention : URI inversée)
+# iface = interface regroupant les signaux
+# sig   = nom du signal portant l'index courant du buffer
+_DBUS_PATH  = "/com/AcqWorker"
+_DBUS_IFACE = "com.AcqWorker"
+_DBUS_SIG   = "DataReady"
 
 #: Durée de sommeil (s) pendant la pause — laisse le CPU libre entre deux vérifications.
 SLEEP_LOOP = 0.05
@@ -128,7 +137,7 @@ def _downsample_peak(y: np.ndarray, max_pts: int,
         return t[out_idx], y[out_idx]
     return y[out_idx]
 
-def acq_worker(data_name, meta_name, queue, pause_event, stop_event,
+def acq_worker(data_name, meta_name, pause_event, stop_event,
                _stream_factory=None):
     """Worker d'acquisition audio exécuté dans un processus séparé (multiprocessing).
 
@@ -146,15 +155,16 @@ def acq_worker(data_name, meta_name, queue, pause_event, stop_event,
         - col 2 (ch2) : canal droit  (float64, normalisé −1 … +1).
         - col 3 (ch3) : différence ch2 − ch1.
 
-    La progression est signalée au processus principal via *queue* (idx courant).
-    L'envoi dans la queue est limité (qsize < 10) pour éviter l'accumulation.
+    La progression est signalée au processus principal via un signal D-Bus
+    ``_DBUS_SIG`` (idx courant). La connexion D-Bus est établie une seule fois
+    au démarrage du worker ; l'émission est throttlée à ~100 Hz pour éviter
+    de saturer le bus quand FakeInputStream tourne à vitesse CPU en tests.
 
     Args:
         data_name:        nom du segment SharedMemory portant le buffer de données
                           (BUFFER_SIZE × (N_CHANNELS+1) float64).
         meta_name:        nom du segment SharedMemory portant le compteur d'index
                           (tableau int64[2], seul meta[0] est utilisé).
-        queue:            mp.Queue de notification vers le thread DataWatcher.
         pause_event:      mp.Event levé pour suspendre l'acquisition sans fermer le stream.
         stop_event:       mp.Event levé pour terminer la boucle proprement.
         _stream_factory:  callable() → context manager compatible sounddevice.InputStream.
@@ -162,11 +172,23 @@ def acq_worker(data_name, meta_name, queue, pause_event, stop_event,
                           Réservé aux tests (injection de FakeInputStream).
     """
     import sounddevice as sd  # import après le fork — PortAudio initialisé dans l'enfant
+    import dbus
+    import dbus.lowlevel
 
     if _stream_factory is None:
         def _stream_factory():
             return sd.InputStream(samplerate=SAMPLE_RATE, channels=2,
                                   dtype="float32", blocksize=CHUNK_SIZE)
+
+    # Connexion D-Bus établie une fois dans le processus enfant (après fork).
+    # dbus.SessionBus() utilise DBUS_SESSION_BUS_ADDRESS héritée du parent.
+    _bus = dbus.SessionBus()
+
+    def _emit_dbus(idx: int) -> None:
+        """Émet le signal D-Bus DataReady(idx) sans main loop GLib."""
+        msg = dbus.lowlevel.SignalMessage(_DBUS_PATH, _DBUS_IFACE, _DBUS_SIG)
+        msg.append(dbus.Int32(idx))
+        _bus.send_message(msg)
 
     shm_data = shared_memory.SharedMemory(name=data_name)
     shm_meta = shared_memory.SharedMemory(name=meta_name)
@@ -175,6 +197,8 @@ def acq_worker(data_name, meta_name, queue, pause_event, stop_event,
     meta = np.ndarray((2,), dtype=np.int64, buffer=shm_meta.buf)
 
     idx = 0
+    _last_emit = 0.0
+    _EMIT_MIN_INTERVAL = 0.01   # 10 ms → 100 Hz max pour ne pas saturer le bus
 
     with _stream_factory() as stream:
         # t0 fixé une seule fois à l'ouverture du stream.
@@ -223,56 +247,13 @@ def acq_worker(data_name, meta_name, queue, pause_event, stop_event,
             idx += n
             meta[0] = idx
 
-            if queue.qsize() < 10:
-                queue.put(idx)
+            now = time.time()
+            if now - _last_emit >= _EMIT_MIN_INTERVAL:
+                _last_emit = now
+                _emit_dbus(idx)
 
     shm_data.close()
     shm_meta.close()
-
-class DataWatcher(QObject):
-    """Pont entre la mp.Queue du processus d'acquisition et le système de signaux Qt.
-
-    Vit dans un QThread dédié. Bloque sur mp.Queue.get() avec un timeout de
-    100 ms, ce qui permet à la boucle de se terminer proprement sans polling
-    actif. Chaque idx reçu est retransmis au thread GUI via le signal data_ready,
-    qui est automatiquement mis en file (queued connection) par Qt.
-
-    Signal:
-        data_ready(int): émis avec l'index d'échantillon courant dès qu'un
-                         nouveau lot de données est disponible en mémoire partagée.
-    """
-
-    #: Émis avec l'index courant (``meta[0]``) dès qu'un nouvel échantillon
-    #: est disponible en mémoire partagée. Connecté à
-    #: :meth:`~test_multi_process_pandas.main.MainWindow.on_data_ready`
-    #: via une queued connection Qt (thread-safe).
-    data_ready = pyqtSignal(int)
-
-    def __init__(self, mp_queue):
-        """Args:
-            mp_queue: la mp.Queue produite par acq_worker à surveiller.
-        """
-        super().__init__()
-        self._queue = mp_queue
-        self._running = True
-
-    @pyqtSlot()
-    def run(self):
-        """Boucle de surveillance, à connecter à QThread.started.
-
-        Bloque sur la queue avec un timeout de 100 ms pour rester réactif
-        à l'appel de stop() sans consommer de CPU inutilement.
-        """
-        while self._running:
-            try:
-                idx = self._queue.get(timeout=0.1)
-                self.data_ready.emit(idx)
-            except mp.queues.Empty:
-                pass
-
-    def stop(self):
-        """Demande l'arrêt propre de la boucle run() au prochain timeout."""
-        self._running = False
 
 
 class MainWindow(QWidget, Ui_MainWindow):
@@ -342,7 +323,6 @@ class MainWindow(QWidget, Ui_MainWindow):
         self.meta[:] = 0
 
         # multiprocessing
-        self.queue = mp.Queue()
         self.pause_event = mp.Event()
         self.stop_event = mp.Event()
         self.process = None
@@ -354,13 +334,14 @@ class MainWindow(QWidget, Ui_MainWindow):
         self._t_last_log  = 0.0
         self._t_last_plot = 0.0
 
-        # watcher thread : surveille la queue du process et émet data_ready
-        self.watcher = DataWatcher(self.queue)
-        self.watcher_thread = QThread()
-        self.watcher.moveToThread(self.watcher_thread)
-        self.watcher_thread.started.connect(self.watcher.run)
-        self.watcher.data_ready.connect(self.on_data_ready)
-        self.watcher_thread.start()
+        # Abonnement D-Bus : Qt connecte directement le signal D-Bus émis par
+        # acq_worker à on_data_ready dans la boucle d'événements GUI — sans
+        # thread intermédiaire ni polling.
+        bus = QDBusConnection.sessionBus()
+        if bus.isConnected():
+            bus.connect("", _DBUS_PATH, _DBUS_IFACE, _DBUS_SIG, self.on_data_ready)
+        else:
+            self.log_msg("[DBUS] Session bus non disponible — notifications désactivées.")
 
     @pyqtSlot(bool)
     def _on_display_mode_changed(self, direct: bool) -> None:
@@ -428,7 +409,6 @@ class MainWindow(QWidget, Ui_MainWindow):
             args=(
                 self.shm_data.name,
                 self.shm_meta.name,
-                self.queue,
                 self.pause_event,
                 self.stop_event,
             ),
@@ -496,7 +476,8 @@ class MainWindow(QWidget, Ui_MainWindow):
             self.df_view.iloc[:pos],   # début
         )
 
-    def on_data_ready(self, idx):
+    @pyqtSlot(int)
+    def on_data_ready(self, idx: int):
         """Slot connecté à DataWatcher.data_ready (thread GUI).
 
         Le worker audio émet ~43 notifications/seconde (44100 / 1024). Ce slot
@@ -583,9 +564,9 @@ class MainWindow(QWidget, Ui_MainWindow):
         Ordre d'arrêt (chaque étape dépend de la précédente) :
 
         1. Lever ``_closed`` — court-circuite les slots qui accèdent à la
-           shared memory (signaux Qt encore en file d'attente).
-        2. Arrêter le thread DataWatcher — garantit qu'aucun nouveau signal
-           ``data_ready`` ne sera émis.
+           shared memory (signaux D-Bus encore en transit).
+        2. Déconnecter le signal D-Bus — garantit qu'aucun nouveau callback
+           ne sera déclenché après libération de la shared memory.
         3. Terminer le processus acq_worker.
         4. Libérer et détruire les segments SharedMemory.
 
@@ -599,14 +580,10 @@ class MainWindow(QWidget, Ui_MainWindow):
 
         self._stop_monitor()
 
-        # Déconnexion explicite avant l'arrêt du thread : évite que Qt tente
-        # de déconnecter ces signaux pendant la destruction (nullptr warning).
-        self.watcher.data_ready.disconnect(self.on_data_ready)
-        self.watcher_thread.started.disconnect(self.watcher.run)
-
-        self.watcher.stop()
-        self.watcher_thread.quit()
-        self.watcher_thread.wait()
+        # Déconnexion du signal D-Bus avant la libération de la shared memory.
+        bus = QDBusConnection.sessionBus()
+        if bus.isConnected():
+            bus.disconnect("", _DBUS_PATH, _DBUS_IFACE, _DBUS_SIG, self.on_data_ready)
 
         if self.process and self.process.is_alive():
             self.process.terminate()

@@ -29,22 +29,24 @@ Tests require `pytest-qt` and run headless via `QT_QPA_PLATFORM=offscreen` (set 
 
 ## Architecture
 
-The application connects three concurrent execution contexts:
+The application connects two concurrent execution contexts via D-Bus:
 
 ```
 acq_worker (subprocess)
   → writes audio frames to SharedMemory circular buffer
-  → puts write-index into mp.Queue
-
-DataWatcher (QThread)
-  → polls mp.Queue with 100ms timeout
-  → emits data_ready(int) signal (queued connection)
+  → emits D-Bus signal DataReady(idx) on com.AcqWorker interface
+    (throttled to 100 Hz via _EMIT_MIN_INTERVAL; uses dbus-python lowlevel,
+     no GLib main loop required for emission-only)
 
 MainWindow (Qt GUI thread)
-  → receives data_ready, reads buffer via get_views()
+  → QDBusConnection.sessionBus().connect() registers on_data_ready directly
+    in the Qt event loop — no separate thread, no polling
+  → on_data_ready reads buffer via get_views()
   → updates pyqtgraph plots (throttled to 30 Hz)
   → updates QTextEdit log (throttled to 2 Hz)
 ```
+
+**D-Bus routing constants** (in `main.py`): `_DBUS_PATH=/com/AcqWorker`, `_DBUS_IFACE=com.AcqWorker`, `_DBUS_SIG=DataReady`. Requires a running D-Bus session bus (`DBUS_SESSION_BUS_ADDRESS` env var, always present in a desktop session).
 
 **Circular buffer** (`BUFFER_SIZE = 96000` frames = 2 s at 48 kHz, 4 columns: `t, ch1, ch2, ch3`). The `get_views()` method returns 1 or 2 numpy/pandas views (chronological order, handling wrap-around) with zero-copy — the DataFrame wraps the SharedMemory array directly.
 
@@ -54,7 +56,7 @@ MainWindow (Qt GUI thread)
 
 ```
 src/test_multi_process_pandas/
-  main.py          # MainWindow, acq_worker, DataWatcher — core of the app
+  main.py          # MainWindow, acq_worker — core of the app
   model/
     APPDATA.py     # Hardware and configuration constants
     APPLOGGING.py  # Logging setup (4 loggers: Qt, acq, calcul, usb1608)
@@ -69,5 +71,5 @@ tests/
 
 - **`acq_worker` accepts `_stream_factory`** for dependency injection in tests — `FakeInputStream` in `conftest.py` replaces `sounddevice.InputStream` without touching production code.
 - **UI file workflow**: edit `views/main.ui` → run `pyuic6 main.ui -o ui_main.py` → `test_compile_ui.py` verifies it stays in sync.
-- **Graceful shutdown order**: set `_closed` flag → stop DataWatcher thread → terminate subprocess → unlink SharedMemory. Skipping steps causes `ResourceWarning` or zombie processes.
+- **Graceful shutdown order**: set `_closed` flag → disconnect D-Bus signal → terminate subprocess → unlink SharedMemory. Skipping the disconnect causes `on_data_ready` to be called after the shared memory is freed.
 - **`setup.cfg`** still has stale metadata (name `AbsorptionLaser`, version `1.0`). `pyproject.toml` is the authoritative build config.

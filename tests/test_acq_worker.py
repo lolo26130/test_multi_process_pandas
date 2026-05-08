@@ -15,22 +15,21 @@ from test_multi_process_pandas.main import (
 
 
 def _start_worker(shm_pair, stream_factory=None):
-    """Démarre acq_worker et retourne (process, queue, pause_event, stop_event).
+    """Démarre acq_worker et retourne (process, pause_event, stop_event).
 
     Args:
         stream_factory: factory injectée dans acq_worker (FakeInputStream pour les tests).
     """
     shm_data, shm_meta, _, _ = shm_pair
-    queue       = mp.Queue()
     pause_event = mp.Event()
     stop_event  = mp.Event()
     p = mp.Process(
         target=acq_worker,
-        args=(shm_data.name, shm_meta.name, queue, pause_event, stop_event,
+        args=(shm_data.name, shm_meta.name, pause_event, stop_event,
               stream_factory),
     )
     p.start()
-    return p, queue, pause_event, stop_event
+    return p, pause_event, stop_event
 
 
 def _wait_for_samples(meta, n, timeout=3.0):
@@ -44,7 +43,7 @@ class TestAcqWorkerBasic:
     def test_writes_at_least_one_chunk(self, shm_pair, fake_stream_factory):
         """Le worker écrit au moins un bloc (CHUNK_SIZE frames) en moins de 3 s."""
         _, _, _, meta = shm_pair
-        p, _, _, stop = _start_worker(shm_pair, fake_stream_factory)
+        p, _, stop = _start_worker(shm_pair, fake_stream_factory)
         _wait_for_samples(meta, CHUNK_SIZE)
         stop.set(); p.join(timeout=2)
 
@@ -59,7 +58,7 @@ class TestAcqWorkerBasic:
         """
         _, _, data, meta = shm_pair
         t_before = time.time()
-        p, _, _, stop = _start_worker(shm_pair, fake_stream_factory)
+        p, _, stop = _start_worker(shm_pair, fake_stream_factory)
         _wait_for_samples(meta, CHUNK_SIZE * 2)
         stop.set(); p.join(timeout=2)
 
@@ -77,7 +76,7 @@ class TestAcqWorkerBasic:
         saut négatif est attendu (au plus un seul).
         """
         _, _, data, meta = shm_pair
-        p, _, _, stop = _start_worker(shm_pair, fake_stream_factory)
+        p, _, stop = _start_worker(shm_pair, fake_stream_factory)
         _wait_for_samples(meta, BUFFER_SIZE + CHUNK_SIZE)   # au moins un wrap
         stop.set(); p.join(timeout=2)
 
@@ -96,7 +95,7 @@ class TestAcqWorkerBasic:
     def test_channel_values_normalized(self, shm_pair, fake_stream_factory):
         """Les valeurs audio (sin/cos synthétiques) restent dans [−1, 1]."""
         _, _, data, meta = shm_pair
-        p, _, _, stop = _start_worker(shm_pair, fake_stream_factory)
+        p, _, stop = _start_worker(shm_pair, fake_stream_factory)
         _wait_for_samples(meta, CHUNK_SIZE)
         stop.set(); p.join(timeout=2)
 
@@ -106,7 +105,7 @@ class TestAcqWorkerBasic:
     def test_ch3_is_difference(self, shm_pair, fake_stream_factory):
         """ch3 = ch2 − ch1 pour chaque frame."""
         _, _, data, meta = shm_pair
-        p, _, _, stop = _start_worker(shm_pair, fake_stream_factory)
+        p, _, stop = _start_worker(shm_pair, fake_stream_factory)
         _wait_for_samples(meta, CHUNK_SIZE)
         stop.set(); p.join(timeout=2)
 
@@ -117,7 +116,7 @@ class TestAcqWorkerBasic:
     def test_increments_meta_counter(self, shm_pair, fake_stream_factory):
         """meta[0] croît par multiples de CHUNK_SIZE."""
         _, _, _, meta = shm_pair
-        p, _, _, stop = _start_worker(shm_pair, fake_stream_factory)
+        p, _, stop = _start_worker(shm_pair, fake_stream_factory)
         _wait_for_samples(meta, CHUNK_SIZE)
         idx1 = int(meta[0])
         _wait_for_samples(meta, idx1 + CHUNK_SIZE)
@@ -133,7 +132,7 @@ class TestAcqWorkerControl:
     def test_stop_terminates_process(self, shm_pair, fake_stream_factory):
         """Le processus se termine proprement après stop_event."""
         _, _, _, meta = shm_pair
-        p, _, _, stop = _start_worker(shm_pair, fake_stream_factory)
+        p, _, stop = _start_worker(shm_pair, fake_stream_factory)
         _wait_for_samples(meta, CHUNK_SIZE)
         stop.set()
         p.join(timeout=2)
@@ -143,7 +142,7 @@ class TestAcqWorkerControl:
     def test_pause_freezes_counter(self, shm_pair, fake_stream_factory):
         """meta[0] ne progresse plus pendant la pause."""
         _, _, _, meta = shm_pair
-        p, _, pause, stop = _start_worker(shm_pair, fake_stream_factory)
+        p, pause, stop = _start_worker(shm_pair, fake_stream_factory)
         _wait_for_samples(meta, CHUNK_SIZE)
 
         pause.set()
@@ -160,7 +159,7 @@ class TestAcqWorkerControl:
     def test_resume_after_pause(self, shm_pair, fake_stream_factory):
         """Après reprise, le compteur recommence à progresser."""
         _, _, _, meta = shm_pair
-        p, _, pause, stop = _start_worker(shm_pair, fake_stream_factory)
+        p, pause, stop = _start_worker(shm_pair, fake_stream_factory)
         _wait_for_samples(meta, CHUNK_SIZE)
 
         pause.set()
@@ -172,14 +171,3 @@ class TestAcqWorkerControl:
         stop.set(); p.join(timeout=2)
 
         assert int(meta[0]) > idx_at_pause
-
-    def test_queue_receives_notifications(self, shm_pair, fake_stream_factory):
-        """La queue reçoit des idx après chaque bloc écrit."""
-        _, _, _, meta = shm_pair
-        p, queue, _, stop = _start_worker(shm_pair, fake_stream_factory)
-        _wait_for_samples(meta, CHUNK_SIZE * 2)
-        stop.set(); p.join(timeout=2)
-
-        assert not queue.empty()
-        idx = queue.get_nowait()
-        assert isinstance(idx, int) and idx >= CHUNK_SIZE

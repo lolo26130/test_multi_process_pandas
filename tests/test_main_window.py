@@ -23,9 +23,6 @@ class TestInit:
         for name, cb in win.checkboxes.items():
             assert cb.isChecked(), f"checkbox '{name}' devrait être cochée"
 
-    def test_watcher_thread_running(self, win):
-        assert win.watcher_thread.isRunning()
-
 
 class TestLogMsg:
 
